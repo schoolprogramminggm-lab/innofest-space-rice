@@ -218,3 +218,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# снимки со спутника не храним в репозитории (сотни МБ, лимит GitHub 100 МБ)
+data/
+*.tif
+*.tiff
+*.jp2
+*.SAFE/
+*.zip
