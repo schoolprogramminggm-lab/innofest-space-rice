@@ -1,0 +1,197 @@
+{
+  "field_1": {
+    "2025-05": {
+      "area_ha": 110.6,
+      "zones": {
+        "healthy": {
+          "ha": 30.1,
+          "pct": 27.2
+        },
+        "stress": {
+          "ha": 12.2,
+          "pct": 11.0
+        },
+        "salinity": {
+          "ha": 2.0,
+          "pct": 1.8
+        },
+        "water": {
+          "ha": 66.3,
+          "pct": 60.0
+        }
+      }
+    },
+    "2025-07": {
+      "area_ha": 110.6,
+      "zones": {
+        "healthy": {
+          "ha": 67.0,
+          "pct": 60.6
+        },
+        "stress": {
+          "ha": 24.7,
+          "pct": 22.3
+        },
+        "salinity": {
+          "ha": 12.0,
+          "pct": 10.8
+        },
+        "water": {
+          "ha": 6.9,
+          "pct": 6.2
+        }
+      }
+    },
+    "2025-08": {
+      "area_ha": 110.6,
+      "zones": {
+        "healthy": {
+          "ha": 35.3,
+          "pct": 31.9
+        },
+        "stress": {
+          "ha": 40.2,
+          "pct": 36.3
+        },
+        "salinity": {
+          "ha": 10.1,
+          "pct": 9.1
+        },
+        "water": {
+          "ha": 25.0,
+          "pct": 22.6
+        }
+      }
+    }
+  },
+  "field_2": {
+    "2025-05": {
+      "area_ha": 91.5,
+      "zones": {
+        "healthy": {
+          "ha": 10.0,
+          "pct": 10.9
+        },
+        "stress": {
+          "ha": 14.0,
+          "pct": 15.3
+        },
+        "salinity": {
+          "ha": 60.5,
+          "pct": 66.1
+        },
+        "water": {
+          "ha": 7.0,
+          "pct": 7.6
+        }
+      }
+    },
+    "2025-07": {
+      "area_ha": 91.5,
+      "zones": {
+        "healthy": {
+          "ha": 55.2,
+          "pct": 60.4
+        },
+        "stress": {
+          "ha": 9.1,
+          "pct": 9.9
+        },
+        "salinity": {
+          "ha": 10.3,
+          "pct": 11.2
+        },
+        "water": {
+          "ha": 17.0,
+          "pct": 18.5
+        }
+      }
+    },
+    "2025-08": {
+      "area_ha": 91.5,
+      "zones": {
+        "healthy": {
+          "ha": 34.6,
+          "pct": 37.9
+        },
+        "stress": {
+          "ha": 36.8,
+          "pct": 40.2
+        },
+        "salinity": {
+          "ha": 1.8,
+          "pct": 2.0
+        },
+        "water": {
+          "ha": 18.3,
+          "pct": 20.0
+        }
+      }
+    }
+  },
+  "field_3": {
+    "2025-05": {
+      "area_ha": 117.0,
+      "zones": {
+        "healthy": {
+          "ha": 17.8,
+          "pct": 15.2
+        },
+        "stress": {
+          "ha": 30.8,
+          "pct": 26.4
+        },
+        "salinity": {
+          "ha": 51.6,
+          "pct": 44.1
+        },
+        "water": {
+          "ha": 16.8,
+          "pct": 14.4
+        }
+      }
+    },
+    "2025-07": {
+      "area_ha": 117.0,
+      "zones": {
+        "healthy": {
+          "ha": 44.1,
+          "pct": 37.7
+        },
+        "stress": {
+          "ha": 15.4,
+          "pct": 13.1
+        },
+        "salinity": {
+          "ha": 42.0,
+          "pct": 35.9
+        },
+        "water": {
+          "ha": 15.5,
+          "pct": 13.2
+        }
+      }
+    },
+    "2025-08": {
+      "area_ha": 117.0,
+      "zones": {
+        "healthy": {
+          "ha": 30.6,
+          "pct": 26.1
+        },
+        "stress": {
+          "ha": 31.4,
+          "pct": 26.8
+        },
+        "salinity": {
+          "ha": 37.2,
+          "pct": 31.8
+        },
+        "water": {
+          "ha": 17.8,
+          "pct": 15.2
+        }
+      }
+    }
+  }
+}
