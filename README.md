@@ -184,11 +184,17 @@ venv\Scripts\activate          # Windows
 pip install -r requirements.txt
 ```
 
-**Скачать снимки:**
-1. Войти в [Copernicus Browser](https://browser.dataspace.copernicus.eu/).
-2. Найти поле, выбрать **Sentinel-2 L2A**, дату без облаков (фильтр облачности ≤ 10%).
-3. **Download → Analytical**, формат **TIFF (32-bit float)**, каналы **B02, B03, B04, B08**, разрешение **10 м**.
-4. Сохранить в `data/field_1/2025-07/` (и так для каждого поля и месяца).
+### Как скачать снимки
+
+Снимки скачивает программа `src/download.py`: для каждого поля из `fields/` она берёт самый безоблачный снимок Sentinel-2 L2A за май, июль и август 2025 (облачность меньше 20%).
+
+1. **Зарегистрируйтесь** на [dataspace.copernicus.eu](https://dataspace.copernicus.eu/) и создайте ключ: *Dashboard → User Settings → OAuth clients → Create*.
+2. **Создайте файл `.env`:** скопируйте `.env.example` в `.env` и впишите `CDSE_CLIENT_ID` и `CDSE_CLIENT_SECRET`. Файл `.env` не попадает в git, никому его не показывайте.
+3. **Положите границы полей** в папку `fields/` (`field_1.geojson`, `field_2.geojson`, `field_3.geojson`), как описано в issue #3.
+4. **Запустите** (с включённым venv): `python src/download.py`
+5. **Проверьте результат:** снимки лежат в `data/` (`field_1_2025-07.tif`, каналы B02, B03, B04, B08, B11), цветные превью в `output/` (`field_1_2025-07.png`). Уже скачанные файлы программа пропускает; если за месяц нет снимка с облачностью < 20%, она напишет об этом.
+
+Проверка без интернета: `python -m pytest tests`.
 
 **Запуск:**
 
@@ -213,6 +219,7 @@ innofest-space-rice/
 │   ├── field_2.geojson
 │   └── field_3.geojson
 ├── src/
+│   ├── download.py        # скачивание снимков Sentinel-2 по полям
 │   ├── load.py            # чтение каналов, обрезка по границе поля
 │   ├── indices.py         # NDVI, SI, NDWI
 │   ├── zones.py           # KMeans + классификатор зон
@@ -222,6 +229,7 @@ innofest-space-rice/
 ├── labels/
 │   └── points.csv         # ручная разметка: широта, долгота, зона
 ├── tests/
+│   ├── test_download.py   # проверка запроса и имён файлов (без интернета)
 │   └── test_indices.py    # проверка формул индексов
 ├── output/                # готовые карты и цифры
 ├── data/                  # снимки (не в git)
