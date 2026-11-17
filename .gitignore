@@ -226,3 +226,9 @@ data/
 *.jp2
 *.SAFE/
 *.zip
+
+# результаты запросов «любое место» (run.py --point / --geojson): у каждого запроса свои файлы
+output/point_*
+output/*_point_*
+output/geojson_*
+output/*_geojson_*

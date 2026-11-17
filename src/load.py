@@ -16,15 +16,19 @@ from rasterio.warp import transform_geom
 import download  # берём из download.py пути, список каналов и чтение GeoJSON
 
 
-def load_scene(field, month):
+def load_scene(field, month, geometry=None, tif=None):
     """
     Читает снимок поля за месяц. Возвращает словарь:
       bands    {"B02": массив, "B03": ..., ...}  отражение 0..1 (float32)
       mask     True там, где пиксель внутри поля и в нём есть данные
       transform, crs   привязка к земле (нужны для карты)
       pixel_ha площадь одного пикселя в гектарах (10 x 10 м = 0.01 га)
+
+    Для полей из fields/ достаточно имени и месяца. Для произвольного места (point.py)
+    контур и файл снимка передаются прямо: geometry (GeoJSON) и tif (путь).
     """
-    tif = download.tif_path(field, month)
+    if tif is None:
+        tif = download.tif_path(field, month)
     with rasterio.open(tif) as src:
         data = src.read().astype("float32")   # форма (каналы, высота, ширина)
         transform = src.transform
@@ -34,7 +38,8 @@ def load_scene(field, month):
     bands = {name: data[i] for i, name in enumerate(download.BANDS)}
 
     # контур поля переводим из градусов в систему координат снимка (метры)
-    geometry = download.read_geometry(download.FIELDS_DIR / (field + ".geojson"))
+    if geometry is None:
+        geometry = download.read_geometry(download.FIELDS_DIR / (field + ".geojson"))
     geometry = transform_geom("EPSG:4326", crs, geometry)
 
     # invert=True: внутри контура True

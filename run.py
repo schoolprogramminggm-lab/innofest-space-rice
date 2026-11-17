@@ -5,6 +5,11 @@ run.py: одна команда делает всё: индексы -> зоны 
     python run.py                   # все поля из fields/
     python run.py --field field_1   # только одно поле
 
+    # любое место: квадрат 500 x 500 м вокруг точки (широта,долгота), снимок качается на лету
+    python run.py --point 44.9716,64.5267 --month 2025-07
+    python run.py --point 44.9716,64.5267 --size 800
+    python run.py --geojson my_field.geojson --month 2025-08    # свой контур
+
 Результат в папке output/:
     ndvi_<поле>_<месяц>.png   картинка NDVI
     map_<поле>.html           карта поля с зонами за все месяцы
@@ -14,6 +19,7 @@ run.py: одна команда делает всё: индексы -> зоны 
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -24,6 +30,7 @@ import export
 import indices
 import load
 import maps
+import point
 import zones
 
 
@@ -51,10 +58,55 @@ def process_scene(field, month):
     return zone_map, scene, areas, field_ha, means
 
 
+def run_point(args):
+    """Режим «любое место»: --point или --geojson. Печатает ответ и время работы."""
+    start = time.time()
+    sys.stdout.reconfigure(errors="replace")   # чтобы казахские буквы не роняли печать в консоли
+
+    if args.point:
+        try:
+            lat, lon = point.parse_point(args.point)
+        except ValueError as e:
+            raise SystemExit("Ошибка в --point: %s" % e)
+        answer = point.analyze_point(lat, lon, args.size, args.month)
+    else:
+        answer = point.analyze_geojson(args.geojson, args.month)
+
+    if answer["ok"]:
+        result = answer["result"]
+        print("%s, %s (участок %.1f га)" % (result["field"], result["date"], result["area_ha"]))
+        for key in zones.ZONE_KEYS:
+            z = result["zones"][key]
+            print("  %-14s %6.1f га  (%4.1f%%)" % (zones.ZONE_NAMES_RU[key], z["ha"], z["pct"]))
+        # JSON для AgroQyzyl рядом с картой
+        path = point.OUTPUT_DIR / ("%s_%s.json" % (result["field"], result["date"]))
+        path.write_text(json.dumps(answer, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print("  карта: %s" % result["map_html"])
+        print("  NDVI:  %s" % result["map_png"])
+        print("  JSON для AgroQyzyl: %s" % path.relative_to(ROOT))
+    else:
+        print("Нет результата: %s" % answer["error"])
+    print("\n" + answer["message"]["ru"])
+    print(answer["message"]["kk"])
+
+    seconds = time.time() - start
+    print("\nЗаняло %.1f с%s" % (seconds, "" if seconds <= 60 else " (дольше 60 с!)"))
+
+
 def main():
     parser = argparse.ArgumentParser(description="Индексы, зоны и карты полей")
     parser.add_argument("--field", help="имя поля, например field_1 (по умолчанию все)")
+    parser.add_argument("--point", help="широта,долгота, например 44.9716,64.5267: любое место")
+    parser.add_argument("--geojson", help="путь к GeoJSON со своим контуром поля")
+    parser.add_argument("--size", type=int, default=500, help="сторона квадрата вокруг точки, м (по умолчанию 500)")
+    parser.add_argument("--month", default=point.DEFAULT_MONTH, help="месяц сезона: 2025-05, 2025-07 или 2025-08")
     args = parser.parse_args()
+
+    if args.point or args.geojson:
+        if args.point and args.geojson:
+            raise SystemExit("Укажите что-то одно: --point или --geojson")
+        run_point(args)
+        return
 
     geojsons = sorted(download.FIELDS_DIR.glob("*.geojson"))
     if args.field:
