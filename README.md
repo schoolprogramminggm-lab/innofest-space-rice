@@ -10,7 +10,7 @@
 | Автор | Мардан, школа программирования GRAND master |
 | Наставник | Куанышбаев А. Ж. |
 | Статус | 🛠 в разработке, готовность к 3 декабря 2026 |
-| Командный проект | [AgroQyzyl](https://github.com/schoolprogramminggm-lab/innofest-agroqyzyl): эта программа работает модулем «карта поля» |
+| Командный проект | AgroQyzyl: эта программа отдаёт данные модулю бота RiceDoctor («карта поля») |
 
 ---
 
@@ -226,7 +226,8 @@ python run.py --field field_1
 Результат в `output/`:
 - `ndvi_field_1_2025-07.png`: картинка NDVI поля за месяц (шкала красный → зелёный);
 - `map_field_1.html`: интерактивная карта поля: спутник, контур, цветные зоны, легенда на русском и казахском; месяцы (май, июль, август) переключаются справа. Нужен интернет для подложки;
-- `summary.json`: площади зон в гектарах и процентах по каждому полю и месяцу.
+- `summary.json`: площади зон в гектарах и процентах по каждому полю и месяцу;
+- `field_1_2025-07.json`: ответ для бота AgroQyzyl по одному полю и месяцу (раздел 9).
 
 Тесты без интернета: `python -m pytest`.
 
@@ -250,11 +251,16 @@ innofest-space-rice/
 │   └── export.py          # JSON для командного бота AgroQyzyl
 ├── labels/
 │   └── points.csv         # ручная разметка: широта, долгота, зона
+├── docs/
+│   └── agroqyzyl-format.md        # единый формат JSON для AgroQyzyl
+├── examples/
+│   └── agroqyzyl_space_rice.json  # пример ответа
 ├── tests/
 │   ├── test_download.py   # проверка запроса и имён файлов (без интернета)
 │   ├── test_indices.py    # проверка формул индексов
 │   ├── test_zones.py      # KMeans даёт 4 зоны, названия по средним
-│   └── test_maps_load.py  # обрезка по контуру поля, карта и легенда
+│   ├── test_maps_load.py  # обрезка по контуру поля, карта и легенда
+│   └── test_export.py     # JSON для AgroQyzyl: ключи, kk/ru, ошибки
 ├── output/                # готовые карты и цифры
 ├── data/                  # снимки (не в git)
 ├── run.py                 # точка запуска
@@ -264,23 +270,39 @@ innofest-space-rice/
 
 ## 9. Формат для AgroQyzyl
 
-*Согласовывается с Санжаром до 14 ноября. Пример:*
+Командный бот AgroQyzyl (модуль бота RiceDoctor) получает данные от обеих программ в **одном формате**. Полное описание, оба модуля и примеры ошибок: [docs/agroqyzyl-format.md](docs/agroqyzyl-format.md). Это тот же файл, что в репозитории RiceDoctor.
+
+Общая обёртка:
+
+```json
+{"module": "space_rice", "version": 1, "ok": true,
+ "result": {...}, "message": {"kk": "...", "ru": "..."}, "error": null}
+```
+
+- `ok`: `true`, если данные есть; `false`, если нет (тогда `result` равен `null`, а в `error` причина);
+- `message`: готовый текст для пользователя на казахском и русском, есть всегда;
+- `result` для SpaceRice (пример: `examples/agroqyzyl_space_rice.json`):
 
 ```json
 {
   "field": "field_2",
   "date": "2025-08",
-  "area_ha": 54.0,
+  "area_ha": 91.5,
   "zones": {
-    "healthy":  {"ha": 38.4, "pct": 71},
-    "stress":   {"ha": 9.2,  "pct": 17},
-    "salinity": {"ha": 4.1,  "pct": 8},
-    "water":    {"ha": 2.3,  "pct": 4}
+    "healthy":  {"ha": 34.6, "pct": 37.9},
+    "stress":   {"ha": 36.8, "pct": 40.2},
+    "salinity": {"ha": 1.8,  "pct": 2.0},
+    "water":    {"ha": 18.3, "pct": 20.0}
   },
-  "problem_area": "северо-восточный угол",
-  "map_png": "output/field_2_2025-08.png"
+  "problem_area": null,
+  "map_html": "output/map_field_2.html",
+  "map_png": "output/ndvi_field_2_2025-08.png"
 }
 ```
+
+`problem_area` («северо-восточный угол») пока `null`: программа ещё не определяет, где на поле проблема.
+
+**Как получить JSON.** `python run.py` сам пишет `output/<поле>_<месяц>.json` для каждого посчитанного поля и месяца. Из кода: `export.to_agroqyzyl("field_2", "2025-08")` (`src/export.py`) берёт цифры из `output/summary.json`. Если за месяц нет данных, вернётся `ok=false` и понятный текст, а не ошибка.
 
 ## 10. Карта без интернета
 

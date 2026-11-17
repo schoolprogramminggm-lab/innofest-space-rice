@@ -9,6 +9,7 @@ run.py: одна команда делает всё: индексы -> зоны 
     ndvi_<поле>_<месяц>.png   картинка NDVI
     map_<поле>.html           карта поля с зонами за все месяцы
     summary.json              площади зон в гектарах
+    <поле>_<месяц>.json       ответ для бота AgroQyzyl (docs/agroqyzyl-format.md)
 """
 import argparse
 import json
@@ -19,6 +20,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "src"))  # чтобы работало `import download`, `import zones`...
 
 import download
+import export
 import indices
 import load
 import maps
@@ -60,7 +62,9 @@ def main():
     if not geojsons:
         raise SystemExit("Не найдены поля в fields/")
 
-    summary = {}
+    # Если summary.json уже есть, дополняем его: так запуск с --field не сотрёт остальные поля
+    summary = export.load_summary() or {}
+    done = []  # какие (поле, месяц) посчитаны сейчас: для них напишем JSON для AgroQyzyl
     for geojson in geojsons:
         field = download.field_name(geojson)
         geometry = download.read_geometry(geojson)
@@ -76,6 +80,7 @@ def main():
             zone_map, scene, areas, field_ha, means = process_scene(field, month)
             map_scenes[month] = (zone_map, scene["transform"], scene["crs"])
             summary[field][label] = {"area_ha": field_ha, "zones": areas}
+            done.append((field, label))
 
             # площади зон в консоль
             print("\n%s, %s (поле %.1f га)" % (field, label, field_ha))
@@ -92,6 +97,11 @@ def main():
     out = download.OUTPUT_DIR / "summary.json"
     out.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print("\nГотово. Площади: %s" % out.relative_to(ROOT))
+
+    # JSON для AgroQyzyl: по файлу на каждое поле и месяц (формат: docs/agroqyzyl-format.md)
+    for field, label in done:
+        path = export.save_agroqyzyl(field, label, summary)
+        print("  JSON для AgroQyzyl: %s" % path.relative_to(ROOT))
 
 
 if __name__ == "__main__":
