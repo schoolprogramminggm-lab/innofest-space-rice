@@ -14,6 +14,8 @@ import json
 import sys
 from pathlib import Path
 
+import rice
+
 ROOT = Path(__file__).resolve().parent.parent   # корень проекта
 OUTPUT_DIR = ROOT / "output"
 SUMMARY_PATH = OUTPUT_DIR / "summary.json"
@@ -24,6 +26,7 @@ ZONES = [
     ("stress", "Стресс", "Күйзеліс"),
     ("salinity", "Засоление", "Тұзданған жер"),
     ("water", "Вода / пусто", "Су / бос жер"),
+    ("not_rice", "Не рисовое поле", "Күріш алқабы емес"),
 ]
 
 
@@ -62,6 +65,8 @@ def build_message(field, month, area_ha, zones):
     kk = ["%s алқабы, %s: %s га." % (field, month, num(area_ha))]
     ru = ["Поле %s, %s: %s га." % (field, month, num(area_ha))]
     for key, name_ru, name_kk in ZONES:
+        if key not in zones or zones[key]["pct"] == 0:
+            continue   # пустые зоны (и зоны, которых нет в старом summary.json) не печатаем
         kk.append("%s: %s га (%s%%)" % (name_kk, num(zones[key]["ha"]), num(zones[key]["pct"])))
         ru.append("%s: %s га (%s%%)" % (name_ru, num(zones[key]["ha"]), num(zones[key]["pct"])))
 
@@ -74,6 +79,22 @@ def build_message(field, month, area_ha, zones):
         kk.append("Негізгі мәселе: тұздану, %s%%." % num(salt["pct"]))
         ru.append("Главная проблема: засоление, %s%%." % num(salt["pct"]))
     return {"kk": "\n".join(kk), "ru": "\n".join(ru)}
+
+
+def not_rice_answer(rice_pct):
+    """Ответ «здесь не рисовое поле»: рисовых пикселей меньше MIN_RICE_SHARE (30%)."""
+    limit = num(100 * rice.MIN_RICE_SHARE)
+    return make_error(
+        "рисовых пикселей %s%% (нужно не меньше %s%%): это не рисовое поле" % (num(rice_pct), limit),
+        "Мұнда күріш алқабы емес сияқты (күріш %s%%, кемі %s%% керек)." % (num(rice_pct), limit),
+        "Здесь, похоже, не рисовое поле (риса %s%%, нужно не меньше %s%%)." % (num(rice_pct), limit),
+    )
+
+
+NO_FLOOD_NOTE = {
+    "kk": "Су басуы тексерілмеді: көктемгі бұлтсыз суреттер жоқ.",
+    "ru": "Без проверки затопления: нет безоблачных весенних снимков.",
+}
 
 
 def to_agroqyzyl(field, month, summary=None, summary_path=None):
@@ -109,6 +130,11 @@ def to_agroqyzyl(field, month, summary=None, summary_path=None):
             "Нет данных по полю %s за %s." % (field, month),
         )
 
+    # В summary.json (run.py и point.py) лежит доля риса. Меньше 30%: это не рисовое поле.
+    rice_pct = scene.get("rice_pct")
+    if rice_pct is not None and not rice.is_rice_field(rice_pct / 100):
+        return not_rice_answer(rice_pct)
+
     result = {
         "field": field,
         "date": month,
@@ -120,6 +146,9 @@ def to_agroqyzyl(field, month, summary=None, summary_path=None):
         "map_png": "output/ndvi_%s_%s.png" % (field, month),
     }
     message = build_message(field, month, scene["area_ha"], scene["zones"])
+    if scene.get("flood_images") == 0:     # весенних снимков не было: маска только по летнему NDVI
+        for lang in ("kk", "ru"):
+            message[lang] += "\n" + NO_FLOOD_NOTE[lang]
     return make_answer(True, result, message, None)
 
 

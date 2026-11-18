@@ -31,11 +31,44 @@ import indices
 import load
 import maps
 import point
+import rice
+import spring
 import zones
 
 
-def process_scene(field, month):
-    """Один снимок: считаем индексы, рисуем NDVI, делим на зоны."""
+SPRING_DIR = download.DATA_DIR / "spring"   # весенние файлы «максимум NDWI» по полям из fields/
+
+
+def field_rice_mask(field, geometry):
+    """
+    Маска риса для поля из fields/ (rice.py): затоплен весной И летом NDVI высокий.
+    Возвращает (маска, доля риса 0..1, число весенних снимков) или None, если нет летних снимков.
+    Весенний файл скачивается один раз в data/spring/. Если сети нет и в кэше его нет,
+    строим маску только по летнему NDVI (images = 0, в ответе будет пометка).
+    """
+    summer = []
+    for month in point.SUMMER_MONTHS:
+        if download.tif_path(field, month).exists():
+            scene = load.load_scene(field, month)
+            b = scene["bands"]
+            summer.append(indices.ndvi(b["B04"], b["B08"]))
+            mask = scene["mask"]
+    if not summer:
+        return None
+
+    flood, images = None, 0
+    try:
+        state = {}
+        flood, images = spring.flood(geometry, SPRING_DIR / (field + "_spring.tif"),
+                                     summer[0].shape, lambda: point.get_token(state))
+    except (SystemExit, Exception) as e:   # нет сети или ключей: не падаем, а идём без проверки воды
+        print("%s: весенние снимки недоступны (%s), маска только по летнему NDVI" % (field, e))
+    pixels = rice.rice_mask(rice.summer_ndvi(*summer), flood, mask)
+    return pixels, rice.rice_share(pixels, mask), images
+
+
+def process_scene(field, month, rice_pixels):
+    """Один снимок: считаем индексы, рисуем NDVI, делим рисовые пиксели на зоны."""
     scene = load.load_scene(field, month)
     b = scene["bands"]
 
@@ -51,8 +84,8 @@ def process_scene(field, month):
         download.OUTPUT_DIR / ("ndvi_%s_%s.png" % (field, download.month_label(month))),
     )
 
-    # 3. зоны KMeans
-    zone_map, means = zones.find_zones(ndvi, si, ndwi, scene["mask"])
+    # 3. зоны KMeans только по рисовым пикселям, остальное «не рисовое поле»
+    zone_map, means = zones.find_rice_zones(ndvi, si, ndwi, rice_pixels, scene["mask"])
     areas = zones.zone_areas(zone_map, scene["pixel_ha"])
     field_ha = round(float(scene["mask"].sum()) * scene["pixel_ha"], 1)
     return zone_map, scene, areas, field_ha, means
@@ -123,15 +156,24 @@ def main():
         summary[field] = {}
         map_scenes = {}  # для карты: {месяц: (зоны, transform, crs)}
 
+        found = field_rice_mask(field, geometry)
+        if found is None:
+            print("%s: нет июльского и августовского снимков, маску риса не построить, пропускаю" % field)
+            continue
+        rice_pixels, share, images = found
+        print("\n%s: риса %.1f%% поля, весенних снимков %d%s" % (
+            field, 100 * share, images, "" if images else " (без проверки затопления)"))
+
         for month in download.MONTHS:
             label = download.month_label(month)
             if not download.tif_path(field, month).exists():
                 print("%s %s: нет снимка в data/, пропускаю" % (field, label))
                 continue
 
-            zone_map, scene, areas, field_ha, means = process_scene(field, month)
+            zone_map, scene, areas, field_ha, means = process_scene(field, month, rice_pixels)
             map_scenes[month] = (zone_map, scene["transform"], scene["crs"])
-            summary[field][label] = {"area_ha": field_ha, "zones": areas}
+            summary[field][label] = {"area_ha": field_ha, "zones": areas,
+                                     "rice_pct": round(100 * share, 1), "flood_images": images}
             done.append((field, label))
 
             # площади зон в консоль

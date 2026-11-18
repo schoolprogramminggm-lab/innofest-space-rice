@@ -11,7 +11,7 @@ import export
 # Обязательные ключи формата (docs/agroqyzyl-format.md)
 KEYS = {"module", "version", "ok", "result", "message", "error"}
 RESULT_KEYS = {"field", "date", "area_ha", "zones", "problem_area", "map_html", "map_png"}
-ZONE_KEYS = {"healthy", "stress", "salinity", "water"}
+ZONE_KEYS = {"healthy", "stress", "salinity", "water", "not_rice"}
 
 # Маленький summary.json «как после run.py»: одно поле, один месяц
 SUMMARY = {
@@ -23,7 +23,10 @@ SUMMARY = {
                 "stress": {"ha": 36.8, "pct": 40.2},
                 "salinity": {"ha": 1.8, "pct": 2.0},
                 "water": {"ha": 18.3, "pct": 20.0},
+                "not_rice": {"ha": 0.0, "pct": 0.0},
             },
+            "rice_pct": 100.0,
+            "flood_images": 5,
         }
     }
 }
@@ -115,3 +118,26 @@ def test_example_file_matches_format():
     assert example["ok"] is True
     assert set(example["result"]) == RESULT_KEYS
     assert set(example["result"]["zones"]) == ZONE_KEYS
+
+
+def test_not_rice_field_gives_ok_false_with_both_languages():
+    summary = json.loads(json.dumps(SUMMARY))   # копия
+    summary["field_2"]["2025-08"]["rice_pct"] = 12.5      # риса меньше 30%
+    answer = export.to_agroqyzyl("field_2", "2025-08", summary)
+    check_envelope(answer)
+    assert answer["ok"] is False and answer["result"] is None
+    assert "Здесь, похоже, не рисовое поле" in answer["message"]["ru"]
+    assert "12,5" in answer["message"]["ru"] and answer["message"]["kk"].strip()
+    assert answer["error"]
+
+    summary["field_2"]["2025-08"]["rice_pct"] = 30.0      # ровно 30%: уже рисовое поле
+    assert export.to_agroqyzyl("field_2", "2025-08", summary)["ok"] is True
+
+
+def test_note_when_no_spring_images():
+    summary = json.loads(json.dumps(SUMMARY))
+    assert "Без проверки затопления" not in export.to_agroqyzyl("field_2", "2025-08", summary)["message"]["ru"]
+    summary["field_2"]["2025-08"]["flood_images"] = 0
+    answer = export.to_agroqyzyl("field_2", "2025-08", summary)
+    assert answer["ok"] is True
+    assert "Без проверки затопления" in answer["message"]["ru"] and answer["message"]["kk"].strip()

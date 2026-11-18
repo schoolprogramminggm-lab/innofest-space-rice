@@ -92,32 +92,6 @@ def test_cache_key_and_path():
 
 
 # ---------- Честные сообщения ----------
-def test_no_rice_message_on_artificial_array():
-    mask = np.ones((10, 10), dtype=bool)
-    bare = np.full((10, 10), 0.1, dtype="float32")       # голая земля: NDVI 0.1
-    answer = point.rice_check(bare, mask)
-    assert set(answer) == KEYS
-    assert answer["ok"] is False and answer["result"] is None
-    assert "нет посевов риса" in answer["message"]["ru"]
-    assert answer["message"]["kk"].strip()
-    assert answer["error"]
-
-    green = np.full((10, 10), 0.7, dtype="float32")      # рис в росте
-    assert point.rice_check(green, mask) is None
-
-
-def test_rice_check_looks_only_inside_mask_and_skips_nan():
-    mask = np.zeros((10, 10), dtype=bool)
-    mask[:5] = True
-    ndvi = np.full((10, 10), 0.8, dtype="float32")
-    ndvi[5:] = 0.0                                       # вне контура пусто: не должно мешать
-    ndvi[0, 0] = np.nan
-    assert point.rice_check(ndvi, mask) is None
-
-    ndvi[:5] = 0.1                                       # а внутри контура пусто
-    assert point.rice_check(ndvi, mask) is not None
-
-
 def test_season_note():
     note = point.season_note(date(2026, 11, 17))         # поля убраны
     assert "убраны" in note["ru"] and "2025" in note["ru"] and note["kk"].strip()
@@ -160,6 +134,31 @@ def make_cached_scene(prefix, geometry, month_label, ndvi_level):
         dst.write(data)
 
 
+def make_spring(prefix, geometry, flooded_share, images=3):
+    """
+    Кладёт в кэш весенний файл (spring.py): канал 1 максимум NDWI, канал 2 число снимков.
+    flooded_share: какая доля пикселей (левые столбцы) была затоплена; images=0: снимков нет.
+    """
+    bbox, epsg, width, height = download.field_bbox(geometry)
+    ndwi = np.full((height, width), -0.3, dtype="float32")          # везде сухо
+    ndwi[:, :int(width * flooded_share)] = 0.3                      # а слева вода
+    count = np.full((height, width), images, dtype="float32")
+    if images == 0:
+        ndwi[:] = -2                                                # как отвечает сервер без снимков
+    tif = point.cache_path(prefix, "spring")
+    tif.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(tif, "w", driver="GTiff", height=height, width=width, count=2,
+                       dtype="float32", crs="EPSG:%d" % epsg,
+                       transform=from_origin(bbox[0], bbox[3], 10, 10)) as dst:
+        dst.write(np.stack([ndwi, count]))
+
+
+def make_summer(prefix, geometry, ndvi_level):
+    """Июль и август одного уровня зелени."""
+    for label in ("2025-07", "2025-08"):
+        make_cached_scene(prefix, geometry, label, ndvi_level)
+
+
 @pytest.fixture
 def tmp_dirs(tmp_path, monkeypatch):
     """Кэш и результаты кладём во временную папку, сеть запрещаем."""
@@ -172,7 +171,8 @@ def tmp_dirs(tmp_path, monkeypatch):
 def test_analyze_point_uses_cache_and_returns_agroqyzyl(tmp_dirs):
     prefix = point.cache_prefix(LAT, LON, 500)
     geometry = point.square_geometry(LAT, LON, 500)
-    make_cached_scene(prefix, geometry, "2025-07", ndvi_level=4.0)   # густая зелень
+    make_summer(prefix, geometry, ndvi_level=4.0)                    # густая зелень
+    make_spring(prefix, geometry, flooded_share=1.0)                 # весной всё было под водой
 
     answer = point.analyze_point(LAT, LON, 500, "2025-07", today=date(2025, 7, 20))
     assert set(answer) == KEYS
@@ -189,11 +189,65 @@ def test_analyze_point_uses_cache_and_returns_agroqyzyl(tmp_dirs):
     assert "сезон 2025" in late["message"]["ru"]
 
 
+def not_rice_asserts(answer):
+    assert set(answer) == KEYS
+    assert answer["ok"] is False and answer["result"] is None
+    assert "не рисовое поле" in answer["message"]["ru"]
+    assert answer["message"]["kk"].strip() and answer["error"]
+
+
 def test_analyze_point_no_rice_on_bare_land(tmp_dirs):
     prefix = point.cache_prefix(LAT, LON, 500)
     geometry = point.square_geometry(LAT, LON, 500)
-    make_cached_scene(prefix, geometry, "2025-07", ndvi_level=0.0)   # NIR = Red: NDVI около 0
+    make_summer(prefix, geometry, ndvi_level=0.0)                    # NIR = Red: NDVI около 0
+    make_spring(prefix, geometry, flooded_share=1.0)                 # вода была, но лето пустое
+
+    not_rice_asserts(point.analyze_point(LAT, LON, 500, "2025-07"))
+
+
+def test_analyze_point_green_grass_without_spring_water_is_not_rice(tmp_dirs):
+    prefix = point.cache_prefix(LAT, LON, 500)
+    geometry = point.square_geometry(LAT, LON, 500)
+    make_summer(prefix, geometry, ndvi_level=4.0)                    # летом густая трава
+    make_spring(prefix, geometry, flooded_share=0.0)                 # а весной воды не было
+
+    not_rice_asserts(point.analyze_point(LAT, LON, 500, "2025-07"))
+
+
+def test_analyze_point_rice_share_threshold(tmp_dirs):
+    prefix = point.cache_prefix(LAT, LON, 500)
+    geometry = point.square_geometry(LAT, LON, 500)
+    make_summer(prefix, geometry, ndvi_level=4.0)
+
+    make_spring(prefix, geometry, flooded_share=0.2)                 # риса 20% < 30%
+    not_rice_asserts(point.analyze_point(LAT, LON, 500, "2025-07"))
+    point.cache_path(prefix, "spring").unlink()
+
+    make_spring(prefix, geometry, flooded_share=0.5)                 # риса 50%
+    answer = point.analyze_point(LAT, LON, 500, "2025-07")
+    assert answer["ok"] is True
+    zones = answer["result"]["zones"]
+    assert zones["not_rice"]["pct"] == pytest.approx(50, abs=5)      # вторая половина «не рис»
+    assert zones["healthy"]["pct"] + zones["stress"]["pct"] == pytest.approx(50, abs=5)
+
+
+def test_analyze_point_without_spring_images_falls_back_to_summer_ndvi(tmp_dirs):
+    prefix = point.cache_prefix(LAT, LON, 500)
+    geometry = point.square_geometry(LAT, LON, 500)
+    make_summer(prefix, geometry, ndvi_level=4.0)
+    make_spring(prefix, geometry, flooded_share=0.0, images=0)       # весенних снимков нет
 
     answer = point.analyze_point(LAT, LON, 500, "2025-07")
-    assert answer["ok"] is False
-    assert "нет посевов риса" in answer["message"]["ru"]
+    assert answer["ok"] is True                                      # зелено, считаем рисом
+    assert "Без проверки затопления" in answer["message"]["ru"]
+    assert answer["message"]["kk"].strip()
+
+
+def test_may_can_be_requested_from_cache(tmp_dirs):
+    """Запрошенный месяц (май) берётся из кэша; маске он не нужен, весну даёт файл spring."""
+    prefix = point.cache_prefix(LAT, LON, 500)
+    geometry = point.square_geometry(LAT, LON, 500)
+    make_summer(prefix, geometry, ndvi_level=4.0)
+    make_cached_scene(prefix, geometry, "2025-05", ndvi_level=4.0)
+    make_spring(prefix, geometry, flooded_share=1.0)
+    assert point.analyze_point(LAT, LON, 500, "2025-05")["ok"] is True

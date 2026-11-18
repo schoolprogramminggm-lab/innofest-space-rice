@@ -232,3 +232,6 @@ output/point_*
 output/*_point_*
 output/geojson_*
 output/*_geojson_*
+
+# карты для ручной разметки (python src/label_tool.py): создаются заново командой
+output/label_*.html

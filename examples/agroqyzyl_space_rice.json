@@ -22,6 +22,10 @@
       "water": {
         "ha": 18.3,
         "pct": 20.0
+      },
+      "not_rice": {
+        "ha": 0.0,
+        "pct": 0.0
       }
     },
     "problem_area": null,
