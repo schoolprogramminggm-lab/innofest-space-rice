@@ -22,6 +22,8 @@ import sys
 import time
 from pathlib import Path
 
+import requests
+
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "src"))  # чтобы работало `import download`, `import zones`...
 
@@ -36,16 +38,17 @@ import spring
 import zones
 
 
-SPRING_DIR = download.DATA_DIR / "spring"   # весенние файлы «максимум NDWI» по полям из fields/
+SPRING_DIR = download.DATA_DIR / "spring"   # весенние файлы по полям из fields/ (spring.py)
 
 
 def field_rice_mask(field, geometry):
     """
     Рисовый массив для поля из fields/ (rice.py): пиксель затоплен весной.
     Возвращает (массив, доля 0..1, число весенних снимков) или None, если построить нельзя.
-    Весенний файл скачивается один раз в data/spring/. Если сети нет и в кэше его нет
-    (или весной не было безоблачных снимков), берём лето: NDVI июля/августа > 0.6, images = 0,
-    в ответе будет пометка «без проверки затопления».
+    Весенний файл скачивается один раз в data/spring/. Подходят снимки, где над полем
+    меньше 20% облаков и теней. Если таких снимков действительно нет, берём лето:
+    NDVI июля/августа > 0.6, images = 0, в ответе будет пометка «без проверки затопления».
+    Если сервер Copernicus не отвечает, это НЕ «нет снимков»: ошибка поднимается наверх.
     """
     summer, mask = [], None
     for month in point.SUMMER_MONTHS:
@@ -57,13 +60,9 @@ def field_rice_mask(field, geometry):
     if not summer:
         return None
 
-    flooded, images = None, 0
-    try:
-        state = {}
-        flooded, images = spring.flood(geometry, SPRING_DIR / (field + "_%s.tif" % spring.CACHE_NAME),
-                                       summer[0].shape, lambda: point.get_token(state))
-    except Exception as e:   # нет сети или ключей: не падаем, а идём без проверки воды
-        print("%s: весенние снимки недоступны (%s), берём лето" % (field, e))
+    state = {}
+    flooded, images = spring.flood(geometry, SPRING_DIR / (field + "_%s.tif" % spring.CACHE_NAME),
+                                   summer[0].shape, mask, lambda: point.get_token(state))
     pixels = rice.rice_array(flooded, mask, rice.summer_ndvi(*summer))
     return pixels, rice.rice_share(pixels, mask), images
 
@@ -154,13 +153,19 @@ def main():
     for geojson in geojsons:
         field = download.field_name(geojson)
         geometry = download.read_geometry(geojson)
-        summary[field] = {}
-        map_scenes = {}  # для карты: {месяц: (зоны, transform, crs)}
-
-        found = field_rice_mask(field, geometry)
+        try:
+            found = field_rice_mask(field, geometry)
+        except download.CopernicusUnavailable as e:
+            print("%s: Сервис Copernicus недоступен, попробуйте позже (%s). Поле пропущено, старые цифры не тронуты." % (field, e))
+            continue
+        except (SystemExit, requests.RequestException) as e:
+            print("%s: не удалось получить весенние снимки (%s). Поле пропущено, старые цифры не тронуты." % (field, e))
+            continue
         if found is None:
             print("%s: нет июльского и августовского снимков, рисовый массив не построить, пропускаю" % field)
             continue
+        summary[field] = {}
+        map_scenes = {}  # для карты: {месяц: (зоны, transform, crs)}
         rice_pixels, share, images = found
         print("\n%s: рисовый массив %.1f%% поля, весенних снимков %d%s" % (
             field, 100 * share, images, "" if images else " (без проверки затопления)"))

@@ -4,16 +4,16 @@
       "area_ha": 110.6,
       "zones": {
         "healthy": {
-          "ha": 0.1,
-          "pct": 0.1
+          "ha": 1.4,
+          "pct": 1.3
         },
         "stress": {
-          "ha": 3.9,
-          "pct": 3.6
+          "ha": 4.5,
+          "pct": 4.1
         },
         "salinity": {
-          "ha": 1.5,
-          "pct": 1.3
+          "ha": 1.6,
+          "pct": 1.4
         },
         "water": {
           "ha": 59.6,
@@ -24,12 +24,12 @@
           "pct": 9.9
         },
         "not_rice": {
-          "ha": 34.6,
-          "pct": 31.2
+          "ha": 32.5,
+          "pct": 29.4
         }
       },
-      "rice_pct": 68.8,
-      "flood_images": 4
+      "rice_pct": 70.6,
+      "flood_images": 7
     },
     "2025-07": {
       "area_ha": 110.6,
@@ -39,12 +39,12 @@
           "pct": 68.7
         },
         "stress": {
-          "ha": 0.0,
-          "pct": 0.0
+          "ha": 1.6,
+          "pct": 1.5
         },
         "salinity": {
-          "ha": 0.1,
-          "pct": 0.0
+          "ha": 0.5,
+          "pct": 0.4
         },
         "water": {
           "ha": 0.0,
@@ -55,27 +55,27 @@
           "pct": 0.0
         },
         "not_rice": {
-          "ha": 34.6,
-          "pct": 31.2
+          "ha": 32.5,
+          "pct": 29.4
         }
       },
-      "rice_pct": 68.8,
-      "flood_images": 4
+      "rice_pct": 70.6,
+      "flood_images": 7
     },
     "2025-08": {
       "area_ha": 110.6,
       "zones": {
         "healthy": {
-          "ha": 46.8,
-          "pct": 42.3
+          "ha": 47.1,
+          "pct": 42.5
         },
         "stress": {
-          "ha": 29.2,
-          "pct": 26.4
+          "ha": 30.9,
+          "pct": 28.0
         },
         "salinity": {
           "ha": 0.1,
-          "pct": 0.0
+          "pct": 0.1
         },
         "water": {
           "ha": 0.0,
@@ -86,12 +86,12 @@
           "pct": 0.0
         },
         "not_rice": {
-          "ha": 34.6,
-          "pct": 31.2
+          "ha": 32.5,
+          "pct": 29.4
         }
       },
-      "rice_pct": 68.8,
-      "flood_images": 4
+      "rice_pct": 70.6,
+      "flood_images": 7
     }
   },
   "field_2": {
@@ -103,39 +103,39 @@
           "pct": 0.0
         },
         "stress": {
-          "ha": 0.9,
-          "pct": 1.0
+          "ha": 1.7,
+          "pct": 1.8
         },
         "salinity": {
-          "ha": 63.9,
-          "pct": 69.9
+          "ha": 66.2,
+          "pct": 72.3
         },
         "water": {
           "ha": 0.7,
           "pct": 0.7
         },
         "empty": {
-          "ha": 5.5,
-          "pct": 6.0
+          "ha": 5.7,
+          "pct": 6.2
         },
         "not_rice": {
-          "ha": 20.5,
-          "pct": 22.4
+          "ha": 17.3,
+          "pct": 18.9
         }
       },
-      "rice_pct": 77.6,
-      "flood_images": 5
+      "rice_pct": 81.1,
+      "flood_images": 7
     },
     "2025-07": {
       "area_ha": 91.5,
       "zones": {
         "healthy": {
-          "ha": 51.0,
-          "pct": 55.7
+          "ha": 53.9,
+          "pct": 58.9
         },
         "stress": {
-          "ha": 11.8,
-          "pct": 12.9
+          "ha": 12.0,
+          "pct": 13.1
         },
         "salinity": {
           "ha": 0.0,
@@ -150,23 +150,23 @@
           "pct": 5.4
         },
         "not_rice": {
-          "ha": 20.5,
-          "pct": 22.4
+          "ha": 17.3,
+          "pct": 18.9
         }
       },
-      "rice_pct": 77.6,
-      "flood_images": 5
+      "rice_pct": 81.1,
+      "flood_images": 7
     },
     "2025-08": {
       "area_ha": 91.5,
       "zones": {
         "healthy": {
-          "ha": 64.3,
-          "pct": 70.3
+          "ha": 67.5,
+          "pct": 73.7
         },
         "stress": {
           "ha": 6.7,
-          "pct": 7.3
+          "pct": 7.4
         },
         "salinity": {
           "ha": 0.0,
@@ -181,12 +181,12 @@
           "pct": 0.0
         },
         "not_rice": {
-          "ha": 20.5,
-          "pct": 22.4
+          "ha": 17.3,
+          "pct": 18.9
         }
       },
-      "rice_pct": 77.6,
-      "flood_images": 5
+      "rice_pct": 81.1,
+      "flood_images": 7
     }
   },
   "field_3": {
@@ -198,12 +198,12 @@
           "pct": 0.0
         },
         "stress": {
-          "ha": 1.5,
+          "ha": 1.6,
           "pct": 1.3
         },
         "salinity": {
-          "ha": 15.6,
-          "pct": 13.3
+          "ha": 16.4,
+          "pct": 14.0
         },
         "water": {
           "ha": 15.2,
@@ -211,22 +211,22 @@
         },
         "empty": {
           "ha": 3.2,
-          "pct": 2.7
+          "pct": 2.8
         },
         "not_rice": {
-          "ha": 81.5,
-          "pct": 69.7
+          "ha": 80.6,
+          "pct": 68.9
         }
       },
-      "rice_pct": 30.3,
-      "flood_images": 4
+      "rice_pct": 31.1,
+      "flood_images": 7
     },
     "2025-07": {
       "area_ha": 117.0,
       "zones": {
         "healthy": {
-          "ha": 35.2,
-          "pct": 30.1
+          "ha": 36.2,
+          "pct": 30.9
         },
         "stress": {
           "ha": 0.2,
@@ -245,19 +245,19 @@
           "pct": 0.0
         },
         "not_rice": {
-          "ha": 81.5,
-          "pct": 69.7
+          "ha": 80.6,
+          "pct": 68.9
         }
       },
-      "rice_pct": 30.3,
-      "flood_images": 4
+      "rice_pct": 31.1,
+      "flood_images": 7
     },
     "2025-08": {
       "area_ha": 117.0,
       "zones": {
         "healthy": {
-          "ha": 27.6,
-          "pct": 23.6
+          "ha": 28.6,
+          "pct": 24.4
         },
         "stress": {
           "ha": 7.8,
@@ -276,12 +276,12 @@
           "pct": 0.0
         },
         "not_rice": {
-          "ha": 81.5,
-          "pct": 69.7
+          "ha": 80.6,
+          "pct": 68.9
         }
       },
-      "rice_pct": 30.3,
-      "flood_images": 4
+      "rice_pct": 31.1,
+      "flood_images": 7
     }
   }
 }

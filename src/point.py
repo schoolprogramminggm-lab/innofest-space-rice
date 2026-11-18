@@ -130,6 +130,15 @@ def no_image_answer(month_label):
     )
 
 
+def unavailable_answer(problem):
+    """Сервер Copernicus не ответил (503, таймаут, нет сети) даже после повторов."""
+    return export.make_error(
+        "сервис Copernicus недоступен: %s" % problem,
+        "Copernicus сервисі қолжетімсіз, кейінірек қайталап көріңіз.",
+        "Сервис Copernicus недоступен, попробуйте позже.",
+    )
+
+
 def server_error_answer(problem):
     return export.make_error(
         "не удалось получить снимок: %s" % problem,
@@ -199,11 +208,15 @@ def analyze_geometry(name, geometry, month_label, prefix, today=None):
             return no_image_answer(month_label)
         scene, ndvi = read_ndvi(name, geometry, month, tif)
 
-        # 2. Весна: был ли пиксель затоплен на безоблачных снимках 20 апреля - 20 июня
+        # 2. Весна: был ли пиксель затоплен на снимках 20 апреля - 20 июня, где над полем
+        #    меньше 20% облаков и теней
         flooded, flood_images = spring.flood(
-            geometry, cache_path(prefix, spring.CACHE_NAME), ndvi.shape, lambda: get_token(state))
+            geometry, cache_path(prefix, spring.CACHE_NAME), ndvi.shape, scene["mask"],
+            lambda: get_token(state))
 
-        # 3. Запасной вариант: весенних снимков нет, берём лето (июль, август) и NDVI > 0.6
+        # 3. Запасной вариант ТОЛЬКО если подходящих весенних снимков действительно нет
+        #    (если сервер просто не ответил, мы сюда не дойдём: см. except ниже)
+        #    Берём лето (июль, август) и NDVI > 0.6
         summer = None
         if flooded is None:
             summer_ndvi = []
@@ -214,9 +227,11 @@ def analyze_geometry(name, geometry, month_label, prefix, today=None):
             if not summer_ndvi:
                 return no_image_answer(download.month_label(SUMMER_MONTHS[0]))
             summer = rice.summer_ndvi(*summer_ndvi)
+    except download.CopernicusUnavailable as e:  # нет интернета, таймаут, 503: уже были повторы
+        return unavailable_answer(e)
     except SystemExit as e:                      # download.get_token: нет ключей или вход не удался
         return server_error_answer(str(e))
-    except requests.RequestException as e:       # нет интернета, таймаут, ошибка сервера
+    except requests.RequestException as e:       # сервер отклонил запрос
         return server_error_answer(str(e))
 
     if scene["mask"].sum() < 4:                  # контур попал на место, где спутник не снимал

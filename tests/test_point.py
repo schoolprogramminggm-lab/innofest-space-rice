@@ -137,19 +137,20 @@ def make_cached_scene(prefix, geometry, month_label, ndvi_level):
 
 def make_spring(prefix, geometry, flooded_share, images=3):
     """
-    Кладёт в кэш весенний файл (spring.py): канал 1: 1 = был затоплен, канал 2: число снимков.
-    flooded_share: какая доля пикселей (левые столбцы) была затоплена; images=0: снимков нет.
+    Кладёт в кэш весенний файл (spring.py): по каналу на пролёт, 0 сухо, 1 затоплено, 2 облако.
+    flooded_share: какая доля пикселей (левые столбцы) затоплена; images подходящих пролётов.
+    images=0: единственный пролёт весь в облаках, подходящих снимков нет.
     """
     bbox, epsg, width, height = download.field_bbox(geometry)
-    flooded = np.zeros((height, width), dtype="float32")
-    flooded[:, :int(width * flooded_share)] = 1                     # слева вода
-    count = np.full((height, width), images, dtype="float32")
+    clear = np.zeros((height, width), dtype="uint8")
+    clear[:, :int(width * flooded_share)] = spring.FLOODED
+    bands = [clear] * images or [np.full((height, width), spring.BAD, dtype="uint8")]
     tif = point.cache_path(prefix, spring.CACHE_NAME)
     tif.parent.mkdir(parents=True, exist_ok=True)
-    with rasterio.open(tif, "w", driver="GTiff", height=height, width=width, count=2,
-                       dtype="float32", crs="EPSG:%d" % epsg,
+    with rasterio.open(tif, "w", driver="GTiff", height=height, width=width, count=len(bands),
+                       dtype="uint8", crs="EPSG:%d" % epsg,
                        transform=from_origin(bbox[0], bbox[3], 10, 10)) as dst:
-        dst.write(np.stack([flooded, count]))
+        dst.write(np.stack(bands))
 
 
 def make_summer(prefix, geometry, ndvi_level):
@@ -253,3 +254,80 @@ def test_may_can_be_requested_from_cache(tmp_dirs):
     make_cached_scene(prefix, geometry, "2025-05", ndvi_level=4.0)
     make_spring(prefix, geometry, flooded_share=1.0)
     assert point.analyze_point(LAT, LON, 500, "2025-05")["ok"] is True
+
+
+# ---------- Ошибки сети и «нет снимков»: разные случаи ----------
+class FakeResponse:
+    def __init__(self, status):
+        self.status_code = status
+        self.text = "No healthy workers found" if status != 200 else ""
+        self.content = b""
+
+    def json(self):
+        return {"access_token": "t"}
+
+
+@pytest.fixture
+def network(tmp_dirs, monkeypatch):
+    """
+    Подменяет requests.post и паузу. Возвращает список вызовов (url) и список ответов,
+    которые сервер отдаёт по очереди (последний повторяется). Настоящей сети нет.
+    """
+    calls, sleeps, answers = [], [], []
+
+    def fake_post(url, **kwargs):
+        calls.append(url)
+        answer = answers[min(len(calls), len(answers)) - 1]
+        if isinstance(answer, Exception):
+            raise answer
+        return FakeResponse(answer)
+
+    monkeypatch.setattr(download.requests, "post", fake_post)
+    monkeypatch.setattr(download.time, "sleep", sleeps.append)       # паузу не ждём, но запоминаем
+    monkeypatch.setattr(download, "get_token", lambda: "token")
+    monkeypatch.setattr(point, "load_dotenv", lambda *a, **k: None)
+    return calls, sleeps, answers
+
+
+@pytest.mark.parametrize("failure", [503, 429, download.requests.Timeout("долго"), download.requests.ConnectionError("нет сети")])
+def test_server_down_is_not_no_images(network, failure):
+    """Сервер не отвечает: ok=false «Сервис Copernicus недоступен», БЕЗ запасного режима."""
+    calls, sleeps, answers = network
+    answers.append(failure)
+    prefix = point.cache_prefix(LAT, LON, 500)
+    geometry = point.square_geometry(LAT, LON, 500)
+    make_cached_scene(prefix, geometry, "2025-07", ndvi_level=4.0)    # месяц есть, весны в кэше нет
+
+    answer = point.analyze_point(LAT, LON, 500, "2025-07")
+    assert set(answer) == KEYS and answer["ok"] is False and answer["result"] is None
+    assert "Сервис Copernicus недоступен, попробуйте позже" in answer["message"]["ru"]
+    assert "Copernicus" in answer["message"]["kk"] and answer["message"]["kk"].strip()
+    assert "недоступен" in answer["error"]
+    assert len(calls) == 1 + download.RETRIES                         # первая попытка и повторы
+    assert len(sleeps) == download.RETRIES                            # перед каждым повтором пауза
+    assert all(url == download.PROCESS_URL for url in calls)          # июль и август не качали: запасного режима нет
+
+
+def test_retry_helps_when_server_recovers(network):
+    calls, sleeps, answers = network
+    answers.extend([503, 200])                                        # один сбой, потом сервер ответил
+    resp = download.post_with_retry(download.PROCESS_URL)
+    assert resp.status_code == 200 and len(calls) == 2 and sleeps == [download.RETRY_PAUSE]
+
+
+def test_bad_request_is_not_retried(network):
+    calls, sleeps, answers = network
+    answers.append(400)                                               # неверный запрос: повтор не поможет
+    assert download.post_with_retry(download.PROCESS_URL).status_code == 400
+    assert len(calls) == 1 and not sleeps
+
+
+def test_login_503_is_also_service_unavailable(monkeypatch):
+    calls, sleeps = [], []
+    monkeypatch.setattr(download.requests, "post", lambda url, **kw: (calls.append(url), FakeResponse(503))[1])
+    monkeypatch.setattr(download.time, "sleep", sleeps.append)
+    monkeypatch.setenv("CDSE_CLIENT_ID", "x")
+    monkeypatch.setenv("CDSE_CLIENT_SECRET", "y")
+    with pytest.raises(download.CopernicusUnavailable):
+        download.get_token()
+    assert len(calls) == 1 + download.RETRIES

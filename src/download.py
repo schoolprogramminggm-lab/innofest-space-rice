@@ -14,6 +14,7 @@ download.py: скачивает снимки Sentinel-2 L2A для каждог�
 """
 import json
 import os
+import time
 from pathlib import Path
 
 import numpy as np
@@ -33,6 +34,9 @@ MONTHS = [5, 7, 8]          # май, июль, август
 MAX_CLOUDS = 20             # облачность меньше 20 %
 PIXEL_SIZE = 10             # метров в одном пикселе
 BANDS = ["B02", "B03", "B04", "B08", "B11"]
+
+RETRIES = 2                 # сколько раз повторить запрос, если сервер не ответил (всего 1 + 2 попытки)
+RETRY_PAUSE = 3.0           # пауза перед повтором, секунд
 
 TOKEN_URL = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
 PROCESS_URL = "https://sh.dataspace.copernicus.eu/api/v1/process"
@@ -168,13 +172,40 @@ def build_request(geometry, month):
 
 
 # ---------- Работа с сетью ----------
+class CopernicusUnavailable(requests.RequestException):
+    """Сервер Copernicus не ответил (нет сети, таймаут) или отвечает ошибкой 5xx / 429 даже после повторов."""
+
+
+def post_with_retry(url, **kwargs):
+    """
+    requests.post с повторами. Повторяем, только если виноват сервер или сеть:
+    таймаут, нет соединения, ответ 5xx (например 503) или 429. Ответ 4xx (неверный запрос,
+    неверные ключи) повтор не лечит, его возвращаем сразу.
+    Если после всех попыток сервер так и не ответил, поднимает CopernicusUnavailable.
+    """
+    reason = ""
+    for attempt in range(RETRIES + 1):
+        if attempt:
+            time.sleep(RETRY_PAUSE)
+        try:
+            resp = requests.post(url, **kwargs)
+        except (requests.Timeout, requests.ConnectionError) as e:
+            reason = type(e).__name__
+            continue
+        if resp.status_code >= 500 or resp.status_code == 429:
+            reason = "код %d" % resp.status_code
+            continue
+        return resp
+    raise CopernicusUnavailable("сервис Copernicus недоступен (%s, попыток: %d)" % (reason, RETRIES + 1))
+
+
 def get_token():
     """Получает временный токен по ключам из .env. Ключи не печатаем."""
     client_id = os.getenv("CDSE_CLIENT_ID")
     client_secret = os.getenv("CDSE_CLIENT_SECRET")
     if not client_id or not client_secret:
         raise SystemExit("Нет ключей: заполните CDSE_CLIENT_ID и CDSE_CLIENT_SECRET в файле .env")
-    resp = requests.post(TOKEN_URL, data={
+    resp = post_with_retry(TOKEN_URL, data={
         "grant_type": "client_credentials",
         "client_id": client_id,
         "client_secret": client_secret,
@@ -185,8 +216,12 @@ def get_token():
 
 
 def download_tif(token, request_body, out_path):
-    """Отправляет запрос и сохраняет полученный GeoTIFF."""
-    resp = requests.post(
+    """
+    Отправляет запрос и сохраняет полученный GeoTIFF. Возвращает True, если файл сохранён,
+    и False, если сервер отклонил сам запрос (4xx). Если сервер недоступен, после повторов
+    поднимает CopernicusUnavailable.
+    """
+    resp = post_with_retry(
         PROCESS_URL,
         headers={"Authorization": "Bearer " + token, "Accept": "image/tiff"},
         json=request_body,

@@ -142,37 +142,78 @@ def test_outside_field_stays_zero_and_nan_is_not_classified():
     assert (zone_map == HEALTHY).sum() == 79
 
 
-# ---------- Весенний файл ----------
+# ---------- Весенний файл: по каналу на пролёт, облачность считается над полем ----------
 def test_spring_request_covers_20_april_to_20_june():
     geometry = {"type": "Polygon", "coordinates": [[[64.52, 44.97], [64.53, 44.97],
                                                     [64.53, 44.98], [64.52, 44.97]]]}
     body = spring.build_request(geometry)
-    window = body["input"]["data"][0]["dataFilter"]["timeRange"]
-    assert window["from"].startswith("2025-04-20") and window["to"].startswith("2025-06-20")
-    assert body["input"]["data"][0]["dataFilter"]["maxCloudCoverage"] == download.MAX_CLOUDS
+    data_filter = body["input"]["data"][0]["dataFilter"]
+    assert data_filter["timeRange"]["from"].startswith("2025-04-20")
+    assert data_filter["timeRange"]["to"].startswith("2025-06-20")
+    # облачность сцены только грубый предфильтр (80%), а не 20%
+    assert data_filter["maxCloudCoverage"] == rice.SCENE_CLOUD_PREFILTER == 80
     script = body["evalscript"]
-    assert "SCL" in script and "ORBIT" in script         # облака убираем по SCL
+    assert "SCL" in script and "ORBIT" in script         # облака и тени убираем по SCL
     assert "B11" in script and "lswi + 0.05 >= ndvi" in script   # правило Xiao 2005
 
 
-def write_spring(path, flooded, count, shape=SHAPE):
-    with rasterio.open(path, "w", driver="GTiff", height=shape[0], width=shape[1], count=2,
-                       dtype="float32", crs="EPSG:32641", transform=from_origin(500000, 4970000, 10, 10)) as dst:
-        dst.write(np.stack([flooded, count]))
+def write_spring(path, bands, shape=SHAPE):
+    """Весенний файл: bands это список массивов-пролётов со значениями 0 сухо, 1 затоплено, 2 облако."""
+    with rasterio.open(path, "w", driver="GTiff", height=shape[0], width=shape[1], count=len(bands),
+                       dtype="uint8", crs="EPSG:32641", transform=from_origin(500000, 4970000, 10, 10)) as dst:
+        dst.write(np.stack(bands).astype("uint8"))
 
 
-def test_spring_read(tmp_path):
-    flooded = full(0)
-    flooded[:, :3] = 1
-    write_spring(tmp_path / "a.tif", flooded, full(3))
-    got, images = spring.read(tmp_path / "a.tif", SHAPE)
-    assert images == 3 and got.dtype == bool and got[:, :3].all() and not got[:, 3:].any()
+def orbit(flooded_cols=0, cloudy_cols=0):
+    """Пролёт: левые cloudy_cols колонок в облаке, дальше flooded_cols колонок затоплено, остальное сухо."""
+    band = np.full(SHAPE, spring.DRY, dtype="uint8")
+    band[:, cloudy_cols:cloudy_cols + flooded_cols] = spring.FLOODED
+    band[:, :cloudy_cols] = spring.BAD
+    return band
+
+
+def test_spring_cloud_is_counted_over_the_field_not_the_scene(tmp_path):
+    clear = orbit(flooded_cols=4)                        # над полем чисто, затоплено 40%
+    cloudy = orbit(flooded_cols=5, cloudy_cols=5)        # облако на 50% поля: снимок не берём
+    edge = orbit(flooded_cols=0, cloudy_cols=1)          # облако на 10% поля (< 20%): берём
+    none = np.full(SHAPE, spring.NO_ORBIT, dtype="uint8")  # пустой канал: пролёта нет
+    write_spring(tmp_path / "a.tif", [clear, cloudy, edge, none])
+
+    flooded, images = spring.read(tmp_path / "a.tif", SHAPE, FIELD)
+    assert images == 2                                   # clear и edge; cloudy и пустой канал не считаются
+    assert flooded[:, :4].all() and not flooded[:, 4:].any()   # затопленное на облачном снимке не учтено
+
+    stats = spring.orbit_stats(tmp_path / "a.tif", SHAPE, FIELD)
+    assert [s["used"] for s in stats] == [True, False, True]
+    assert stats[1]["cloud"] == pytest.approx(0.5)
+
+
+def test_cloud_outside_the_field_does_not_matter(tmp_path):
+    band = orbit(flooded_cols=3)
+    band[:, 5:] = spring.BAD                             # вся правая половина в облаках...
+    mask = FIELD.copy()
+    mask[:, 5:] = False                                  # ...но поле это только левая половина
+    write_spring(tmp_path / "a.tif", [band])
+    flooded, images = spring.read(tmp_path / "a.tif", SHAPE, mask)
+    assert images == 1 and flooded[:, :3].all()
+
+
+def test_cloud_threshold_is_20_percent_of_field(tmp_path):
+    write_spring(tmp_path / "a.tif", [orbit(cloudy_cols=2)])    # ровно 20%: уже пропускаем (нужно меньше 20%)
+    assert spring.read(tmp_path / "a.tif", SHAPE, FIELD)[1] == 0
+    write_spring(tmp_path / "b.tif", [orbit(cloudy_cols=1)])    # 10%: берём
+    assert spring.read(tmp_path / "b.tif", SHAPE, FIELD)[1] == 1
+
+
+def test_spring_read_checks_shape(tmp_path):
+    write_spring(tmp_path / "a.tif", [orbit()])
     with pytest.raises(ValueError):                       # снимок другого размера не склеиваем молча
-        spring.read(tmp_path / "a.tif", (5, 5))
+        spring.read(tmp_path / "a.tif", (5, 5), np.ones((5, 5), dtype=bool))
 
 
-def test_spring_without_images_returns_none(tmp_path):
-    write_spring(tmp_path / "a.tif", full(0), full(0))
+def test_spring_without_suitable_images_returns_none(tmp_path):
+    """Все снимки в облаках над полем: подходящих нет -> (None, 0), включится запасной вариант."""
+    write_spring(tmp_path / "a.tif", [orbit(cloudy_cols=10), orbit(cloudy_cols=6)])
     # файл уже в кэше, поэтому в сеть (get_token) функция не идёт
-    got, images = spring.flood({}, tmp_path / "a.tif", SHAPE, lambda: pytest.fail("лезет в сеть"))
+    got, images = spring.flood({}, tmp_path / "a.tif", SHAPE, FIELD, lambda: pytest.fail("лезет в сеть"))
     assert got is None and images == 0
