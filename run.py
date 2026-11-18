@@ -10,6 +10,9 @@ run.py: одна команда делает всё: индексы -> зоны 
     python run.py --point 44.9716,64.5267 --size 800
     python run.py --geojson my_field.geojson --month 2025-08    # свой контур
 
+Зоны внутри рисового массива считает классификатор, если есть models/zones.joblib
+(python src/train_zones.py), иначе пороговые правила (src/rice.py).
+
 Результат в папке output/:
     ndvi_<поле>_<месяц>.png   картинка NDVI
     map_<поле>.html           карта поля с зонами за все месяцы
@@ -44,7 +47,8 @@ SPRING_DIR = download.DATA_DIR / "spring"   # весенние файлы по �
 def field_rice_mask(field, geometry):
     """
     Рисовый массив для поля из fields/ (rice.py): пиксель затоплен весной.
-    Возвращает (массив, доля 0..1, число весенних снимков) или None, если построить нельзя.
+    Возвращает (массив, доля 0..1, число весенних снимков, flooded) или None, если построить нельзя.
+    flooded: где пиксель был затоплен весной (None, если весенних снимков нет).
     Весенний файл скачивается один раз в data/spring/. Подходят снимки, где над полем
     меньше 20% облаков и теней. Если таких снимков действительно нет, берём лето:
     NDVI июля/августа > 0.6, images = 0, в ответе будет пометка «без проверки затопления».
@@ -64,11 +68,27 @@ def field_rice_mask(field, geometry):
     flooded, images = spring.flood(geometry, SPRING_DIR / (field + "_%s.tif" % spring.CACHE_NAME),
                                    summer[0].shape, mask, lambda: point.get_token(state))
     pixels = rice.rice_array(flooded, mask, rice.summer_ndvi(*summer))
-    return pixels, rice.rice_share(pixels, mask), images
+    return pixels, rice.rice_share(pixels, mask), images, flooded
 
 
-def process_scene(field, month, rice_pixels):
-    """Один снимок: считаем индексы, рисуем NDVI, делим рисовые пиксели на зоны."""
+def field_features(field, flooded):
+    """
+    Признаки для классификатора (zones.build_features): индексы за май, июль и август
+    и признак затопления. Если нет снимка за какой-то месяц, возвращает None.
+    """
+    by_month = {}
+    for month in zones.FEATURE_MONTHS:
+        if not download.tif_path(field, month).exists():
+            return None
+        by_month[month] = zones.scene_indices(load.load_scene(field, month))
+    return zones.build_features(by_month, flooded)
+
+
+def process_scene(field, month, rice_pixels, model=None, features=None):
+    """
+    Один снимок: считаем индексы, рисуем NDVI, делим рисовые пиксели на зоны.
+    Если есть модель и признаки, зоны даёт классификатор, иначе пороговые правила.
+    """
     scene = load.load_scene(field, month)
     b = scene["bands"]
 
@@ -85,10 +105,13 @@ def process_scene(field, month, rice_pixels):
     )
 
     # 3. зоны внутри рисового массива, остальное «не рисовое поле»
-    zone_map, means = zones.find_rice_zones(ndvi, si, ndwi, rice_pixels, scene["mask"])
+    if model is not None and features is not None:
+        zone_map = zones.find_model_zones(model, features, rice_pixels, scene["mask"])
+    else:
+        zone_map, _ = zones.find_rice_zones(ndvi, si, ndwi, rice_pixels, scene["mask"])
     areas = zones.zone_areas(zone_map, scene["pixel_ha"])
     field_ha = round(float(scene["mask"].sum()) * scene["pixel_ha"], 1)
-    return zone_map, scene, areas, field_ha, means
+    return zone_map, scene, areas, field_ha
 
 
 def run_point(args):
@@ -114,6 +137,10 @@ def run_point(args):
         # JSON для AgroQyzyl рядом с картой
         path = point.OUTPUT_DIR / ("%s_%s.json" % (result["field"], result["date"]))
         path.write_text(json.dumps(answer, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        names = {"classifier": "классификатор (models/zones.joblib)", "rules": "пороговые правила"}
+        print("  зоны: %s" % names.get(result["method"], result["method"]))
+        if result["point_class"]:
+            print("  класс точки: %s" % result["point_class"])
         print("  карта: %s" % result["map_html"])
         print("  NDVI:  %s" % result["map_png"])
         print("  JSON для AgroQyzyl: %s" % path.relative_to(ROOT))
@@ -149,6 +176,7 @@ def main():
 
     # Если summary.json уже есть, дополняем его: так запуск с --field не сотрёт остальные поля
     summary = export.load_summary() or {}
+    model = zones.load_model()   # None, если models/zones.joblib нет: тогда пороговые правила
     done = []  # какие (поле, месяц) посчитаны сейчас: для них напишем JSON для AgroQyzyl
     for geojson in geojsons:
         field = download.field_name(geojson)
@@ -166,9 +194,18 @@ def main():
             continue
         summary[field] = {}
         map_scenes = {}  # для карты: {месяц: (зоны, transform, crs)}
-        rice_pixels, share, images = found
+        rice_pixels, share, images, flooded = found
+        features = None
+        if model is not None and flooded is not None:
+            features = field_features(field, flooded)
+        method = "classifier" if features is not None else "rules"
         print("\n%s: рисовый массив %.1f%% поля, весенних снимков %d%s" % (
             field, 100 * share, images, "" if images else " (без проверки затопления)"))
+        if features is not None:
+            print("%s: зоны по классификатору (models/zones.joblib)" % field)
+        else:
+            why = "модели models/zones.joblib нет" if model is None else "не хватает снимков или весны для классификатора"
+            print("%s: зоны по пороговым правилам (%s)" % (field, why))
 
         for month in download.MONTHS:
             label = download.month_label(month)
@@ -176,10 +213,11 @@ def main():
                 print("%s %s: нет снимка в data/, пропускаю" % (field, label))
                 continue
 
-            zone_map, scene, areas, field_ha, means = process_scene(field, month, rice_pixels)
+            zone_map, scene, areas, field_ha = process_scene(field, month, rice_pixels, model, features)
             map_scenes[month] = (zone_map, scene["transform"], scene["crs"])
             summary[field][label] = {"area_ha": field_ha, "zones": areas,
-                                     "rice_pct": round(100 * share, 1), "flood_images": images}
+                                     "rice_pct": round(100 * share, 1), "flood_images": images,
+                                     "method": method}
             done.append((field, label))
 
             # площади зон в консоль

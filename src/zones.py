@@ -7,7 +7,11 @@ KMeans сам собирает пиксели в 4 группы (кластер�
 
 В карте зон каждый пиксель хранит код: 0 = вне поля / нет данных, 1..4 = зона.
 """
+from pathlib import Path
+
+import joblib
 import numpy as np
+import indices
 import rice as rice_rules   # пороги зон и затопления
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
@@ -27,6 +31,99 @@ ZONE_NAMES_RU = {
     "empty": "Неудачный посев / пусто",
     "not_rice": "Не рисовое поле",
 }
+
+
+# ---------- Классификатор (issue #11) ----------
+# Классы точек разметки и ответа: фиксированный список. «empty» (неудачный посев) в нём нет:
+# такой зоны в разметке не было, её даёт только правило по порогам.
+POINT_CLASSES = ["healthy", "stress", "salinity", "water", "not_rice"]
+
+# Модель лежит в репозитории (она маленькая). Тесты подменяют этот путь.
+MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "zones.joblib"
+
+# Признаки пикселя: четыре индекса за каждый месяц и признак весеннего затопления
+FEATURE_MONTHS = [5, 7, 8]
+INDEX_NAMES = ["ndvi", "ndwi", "si", "lswi"]
+FEATURE_NAMES = ["%s_%02d" % (name, month) for month in FEATURE_MONTHS for name in INDEX_NAMES] + ["flooded_spring"]
+
+
+def scene_indices(scene):
+    """Четыре индекса снимка: {"ndvi": массив, "ndwi": ..., "si": ..., "lswi": ...}."""
+    b = scene["bands"]
+    return {
+        "ndvi": indices.ndvi(b["B04"], b["B08"]),
+        "ndwi": indices.ndwi(b["B03"], b["B08"]),
+        "si": indices.si(b["B02"], b["B04"]),
+        "lswi": indices.lswi(b["B08"], b["B11"]),
+    }
+
+
+def build_features(by_month, flooded):
+    """
+    Признаки каждого пикселя: массив (высота, ширина, число признаков), порядок как в FEATURE_NAMES.
+
+      by_month - {5: scene_indices(...), 7: ..., 8: ...}: индексы за май, июль, август
+      flooded  - True там, где пиксель был затоплен весной (spring.flood)
+    """
+    layers = [by_month[month][name] for month in FEATURE_MONTHS for name in INDEX_NAMES]
+    layers.append(np.asarray(flooded, dtype="float32"))
+    return np.stack(layers, axis=-1).astype("float32")
+
+
+def save_model(model, path=None):
+    """Сохраняет классификатор вместе со списком признаков (чтобы не перепутать порядок)."""
+    path = Path(path) if path else MODEL_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump({"model": model, "features": FEATURE_NAMES}, path)
+    return path
+
+
+def load_model(path=None):
+    """
+    Читает классификатор. Если файла нет или он не подходит (другие признаки, битый файл),
+    возвращает None: тогда зоны считаются по пороговым правилам (rice.py).
+    """
+    path = Path(path) if path else MODEL_PATH
+    if not path.exists():
+        return None
+    try:
+        saved = joblib.load(path)
+        if saved["features"] != FEATURE_NAMES:
+            return None
+        return saved["model"]
+    except Exception:
+        return None
+
+
+def find_model_zones(model, features, rice, mask):
+    """
+    Зоны внутри рисового массива по классификатору. Вне массива (но внутри поля) «не рисовое поле».
+
+      features - build_features(...)
+      rice     - True на пикселях рисового массива, mask - True внутри поля
+    Возвращает zone_map (коды зон, как в find_zones). Пиксели, где какой-то признак
+    не посчитался (NaN), остаются «не рисовое поле», как и в правилах.
+    """
+    zone_map = np.zeros(mask.shape, dtype="uint8")
+    zone_map[mask] = NOT_RICE_CODE
+
+    valid = rice & mask & np.isfinite(features).all(axis=-1)
+    if valid.any():
+        predicted = model.predict(features[valid])
+        zone_map[valid] = [ZONE_KEYS.index(key) + 1 for key in predicted]
+
+    return zone_map
+
+
+def point_class(zone_map, row, col):
+    """Класс пикселя из фиксированного списка POINT_CLASSES или None (вне поля, зона «empty»)."""
+    if not (0 <= row < zone_map.shape[0] and 0 <= col < zone_map.shape[1]):
+        return None
+    code = int(zone_map[row, col])
+    if code == 0:
+        return None
+    key = ZONE_KEYS[code - 1]
+    return key if key in POINT_CLASSES else None
 
 
 def name_clusters(means):

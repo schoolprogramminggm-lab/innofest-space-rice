@@ -143,10 +143,18 @@ def to_agroqyzyl(field, month, summary=None, summary_path=None):
         "zones": scene["zones"],
         # Место проблемы программа пока не определяет. Если оно появится в summary.json, подхватим.
         "problem_area": scene.get("problem_area"),
+        # класс точки запроса из списка zones.POINT_CLASSES (только для запроса по точке, иначе null)
+        "point_class": scene.get("point_class"),
+        # чем посчитаны зоны: "classifier" (models/zones.joblib) или "rules" (пороги rice.py)
+        "method": scene.get("method"),
         "map_html": "output/map_%s.html" % field,
         "map_png": "output/ndvi_%s_%s.png" % (field, month),
     }
     message = build_message(field, month, scene["area_ha"], scene["zones"])
+    for key, name_ru, name_kk in ZONES:        # класс точки запроса, если он есть
+        if key == scene.get("point_class"):
+            message["kk"] += "\nНүкте: %s." % name_kk
+            message["ru"] += "\nТочка: %s." % name_ru
     if scene.get("flood_images") == 0:     # весенних снимков не было: маска только по летнему NDVI
         for lang in ("kk", "ru"):
             message[lang] += "\n" + NO_FLOOD_NOTE[lang]

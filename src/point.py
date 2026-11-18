@@ -6,7 +6,8 @@ point.py: любое поле по запросу (issue #18): точка на �
   2. берёт снимки Sentinel-2 из кэша data/cache/ или скачивает их (download.py, spring.py):
      нужный месяц и весну (был ли пиксель затоплен);
   3. строит рисовый массив (rice.py): пиксель затоплен весной (LSWI + 0.05 >= NDVI, Xiao 2005);
-  4. внутри массива делит пиксели на зоны (здоровый рис, стресс, засоление, вода, пусто),
+  4. внутри массива делит пиксели на зоны: классификатором из models/zones.joblib (issue #11),
+     а если модели нет, пороговыми правилами (здоровый рис, стресс, засоление, вода, пусто);
      вне массива «не рисовое поле»; рисует карту и картинку NDVI;
   5. возвращает ответ в формате AgroQyzyl (docs/agroqyzyl-format.md).
 Если массива меньше 30% квадрата, ответ ok=false: «Здесь, похоже, не рисовое поле».
@@ -23,6 +24,7 @@ from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
+from rasterio.transform import rowcol
 from rasterio.warp import transform as warp_transform
 
 import download
@@ -183,6 +185,28 @@ def fetch_tif(geometry, month, tif, state):
     return "ok"
 
 
+def model_features(geometry, prefix, flooded, state):
+    """
+    Признаки для классификатора: индексы за май, июль и август (из кэша или скачиваются)
+    и признак весеннего затопления. Если за какой-то месяц нет безоблачного снимка,
+    возвращает None: классификатор не применить, зоны считаются по правилам.
+    """
+    by_month = {}
+    for m in zones.FEATURE_MONTHS:
+        month_tif = cache_path(prefix, download.month_label(m))
+        if fetch_tif(geometry, m, month_tif, state) != "ok":
+            return None
+        by_month[m] = zones.scene_indices(load.load_scene("", m, geometry=geometry, tif=month_tif))
+    return zones.build_features(by_month, flooded)
+
+
+def center_pixel(center, scene):
+    """Строка и столбец пикселя снимка, в котором лежит точка center = (широта, долгота)."""
+    xs, ys = warp_transform("EPSG:4326", scene["crs"], [center[1]], [center[0]])
+    row, col = rowcol(scene["transform"], xs, ys)
+    return int(row[0]), int(col[0])
+
+
 def read_ndvi(name, geometry, month, tif):
     """Читает снимок из файла. Возвращает (сцена, NDVI)."""
     scene = load.load_scene(name, month, geometry=geometry, tif=tif)
@@ -191,12 +215,19 @@ def read_ndvi(name, geometry, month, tif):
 
 
 # ---------- Главная логика ----------
-def analyze_geometry(name, geometry, month_label, prefix, today=None):
+NO_MODEL_NOTE = {
+    "kk": "Жіктегіш қолданылмады (үш айдың бәрі үшін бұлтсыз суреттер жоқ): аймақтар шектік ережелермен есептелді.",
+    "ru": "Классификатор не применён (нет безоблачных снимков за все три месяца): зоны посчитаны по пороговым правилам.",
+}
+
+
+def analyze_geometry(name, geometry, month_label, prefix, today=None, center=None):
     """
     Полный конвейер для одного контура и месяца. Возвращает ответ AgroQyzyl.
 
       name   - имя для файлов результата (map_<name>.html и т. д.)
       prefix - начало имени файла в кэше
+      center - (широта, долгота) точки запроса: для неё в ответе будет класс и маркер на карте
     """
     today = today or date.today()
     month = parse_month(month_label)
@@ -227,6 +258,12 @@ def analyze_geometry(name, geometry, month_label, prefix, today=None):
             if not summer_ndvi:
                 return no_image_answer(download.month_label(SUMMER_MONTHS[0]))
             summer = rice.summer_ndvi(*summer_ndvi)
+
+        # 3б. Классификатор нужен все три месяца и весна (если модель есть); иначе правила
+        model = zones.load_model()
+        features = None
+        if model is not None and flooded is not None:
+            features = model_features(geometry, prefix, flooded, state)
     except download.CopernicusUnavailable as e:  # нет интернета, таймаут, 503: уже были повторы
         return unavailable_answer(e)
     except SystemExit as e:                      # download.get_token: нет ключей или вход не удался
@@ -244,24 +281,42 @@ def analyze_geometry(name, geometry, month_label, prefix, today=None):
     if not rice.is_rice_field(share):
         return export.not_rice_answer(100 * share)
 
-    # 5. Зоны внутри массива по NDVI, SI и NDWI месяца; вне массива «не рисовое поле»
-    b = scene["bands"]
-    si = indices.si(b["B02"], b["B04"])
-    ndwi = indices.ndwi(b["B03"], b["B08"])
-    zone_map, _ = zones.find_rice_zones(ndvi, si, ndwi, rice_pixels, mask)
+    # 5. Зоны внутри массива: классификатор, если он есть и снимков хватает, иначе пороговые правила.
+    #    Вне массива «не рисовое поле».
+    if features is not None:
+        zone_map = zones.find_model_zones(model, features, rice_pixels, mask)
+        method = "classifier"
+    else:
+        b = scene["bands"]
+        si = indices.si(b["B02"], b["B04"])
+        ndwi = indices.ndwi(b["B03"], b["B08"])
+        zone_map, _ = zones.find_rice_zones(ndvi, si, ndwi, rice_pixels, mask)
+        method = "rules"
     areas = zones.zone_areas(zone_map, scene["pixel_ha"])
     field_ha = round(float(mask.sum()) * scene["pixel_ha"], 1)
 
     # 6. Картинка NDVI и карта
     indices.save_ndvi_png(ndvi, scene["mask"], "NDVI: %s, %s" % (name, month_label),
                           OUTPUT_DIR / ("ndvi_%s_%s.png" % (name, month_label)))
+
+    # Класс самой точки (из zones.POINT_CLASSES) и маркер на карте
+    point_class = marker = None
+    if center is not None:
+        row, col = center_pixel(center, scene)
+        point_class = zones.point_class(zone_map, row, col)
+        if point_class:
+            marker = (center[0], center[1], point_class)
     maps.save_map(name, geometry, {month: (zone_map, scene["transform"], scene["crs"])},
-                  OUTPUT_DIR / ("map_%s.html" % name))
+                  OUTPUT_DIR / ("map_%s.html" % name), marker=marker)
 
     # 7. Ответ в формате AgroQyzyl: summary собираем в памяти, summary.json не трогаем
     summary = {name: {month_label: {"area_ha": field_ha, "zones": areas,
-                                    "rice_pct": round(100 * share, 1), "flood_images": flood_images}}}
+                                    "rice_pct": round(100 * share, 1), "flood_images": flood_images,
+                                    "method": method, "point_class": point_class}}}
     answer = export.to_agroqyzyl(name, month_label, summary)
+    if model is not None and features is None and flooded is not None:   # модель есть, но снимков не хватило
+        for lang in ("kk", "ru"):
+            answer["message"][lang] += "\n" + NO_MODEL_NOTE[lang]
     note = season_note(today)
     if note:
         for lang in ("kk", "ru"):
@@ -289,7 +344,7 @@ def analyze_point(lat, lon, size=500, month=DEFAULT_MONTH, today=None):
     size = int(size)
     geometry = square_geometry(lat, lon, size)
     name = "point_" + cache_prefix(lat, lon, size)
-    return analyze_geometry(name, geometry, month.strip(), cache_prefix(lat, lon, size), today)
+    return analyze_geometry(name, geometry, month.strip(), cache_prefix(lat, lon, size), today, (lat, lon))
 
 
 def analyze_geojson(path, month=DEFAULT_MONTH, today=None):

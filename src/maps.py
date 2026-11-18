@@ -12,6 +12,8 @@ import numpy as np
 from rasterio.transform import array_bounds
 from rasterio.warp import Resampling, calculate_default_transform, reproject
 
+import zones
+
 # Цвета зон (RGB), как в README: зелёный, жёлтый, белый, синий, коричневый, серый. Порядок как в zones.ZONE_KEYS.
 ZONE_COLORS = [
     (46, 158, 62),    # healthy  — зелёный
@@ -95,13 +97,26 @@ def legend_html():
     )
 
 
-def build_map(field, geometry, scenes, year=2025):
+def point_marker(lat, lon, point_class):
+    """Маркер точки запроса: цвет и подпись по её классу (zones.POINT_CLASSES)."""
+    index = zones.ZONE_KEYS.index(point_class)
+    r, g, b = ZONE_COLORS[index]
+    ru, kk = ZONE_LABELS[index]
+    return folium.CircleMarker(
+        [lat, lon], radius=8, color="#000000", weight=2, fill=True,
+        fill_color="#%02x%02x%02x" % (r, g, b), fill_opacity=1,
+        tooltip="Точка: %s / %s (%s)" % (ru, kk, point_class),
+    )
+
+
+def build_map(field, geometry, scenes, year=2025, marker=None):
     """
     Собирает карту поля.
 
     field    — имя поля, например "field_1"
     geometry — контур поля (GeoJSON, градусы)
     scenes   — {месяц: (карта зон, transform, crs)}, например {5: (...), 7: (...), 8: (...)}
+    marker   — (широта, долгота, класс) точки запроса или None: на карте появится маркер
     Возвращает объект folium.Map.
     """
     # переводим зоны каждого месяца в градусы и находим границы поля
@@ -136,13 +151,16 @@ def build_map(field, geometry, scenes, year=2025):
         tooltip=field,
     ).add_to(m)
 
+    if marker:
+        point_marker(*marker).add_to(m)
+
     folium.LayerControl(collapsed=False).add_to(m)
     m.get_root().html.add_child(folium.Element(legend_html()))
     return m
 
 
-def save_map(field, geometry, scenes, path):
-    """Строит карту и сохраняет в HTML-файл."""
-    m = build_map(field, geometry, scenes)
+def save_map(field, geometry, scenes, path, marker=None):
+    """Строит карту и сохраняет в HTML-файл. marker: (широта, долгота, класс) или None."""
+    m = build_map(field, geometry, scenes, marker=marker)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     m.save(str(path))

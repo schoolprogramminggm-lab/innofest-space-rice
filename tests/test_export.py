@@ -10,7 +10,7 @@ import export
 
 # Обязательные ключи формата (docs/agroqyzyl-format.md)
 KEYS = {"module", "version", "ok", "result", "message", "error"}
-RESULT_KEYS = {"field", "date", "area_ha", "zones", "problem_area", "map_html", "map_png"}
+RESULT_KEYS = {"field", "date", "area_ha", "zones", "problem_area", "point_class", "method", "map_html", "map_png"}
 ZONE_KEYS = {"healthy", "stress", "salinity", "water", "empty", "not_rice"}
 
 # Маленький summary.json «как после run.py»: одно поле, один месяц
@@ -56,6 +56,7 @@ def test_ok_answer_has_all_keys_and_both_languages():
     assert set(result["zones"]) == ZONE_KEYS
     assert result["zones"]["stress"] == {"ha": 36.8, "pct": 40.2}
     assert result["problem_area"] is None          # место проблемы пока не определяем
+    assert result["point_class"] is None and result["method"] is None   # поле из fields/: точки нет, в старом summary метода нет
     assert result["map_html"] == "output/map_field_2.html"
     assert result["map_png"] == "output/ndvi_field_2_2025-08.png"
 
@@ -142,3 +143,11 @@ def test_note_when_no_spring_images():
     answer = export.to_agroqyzyl("field_2", "2025-08", summary)
     assert answer["ok"] is True
     assert "Без проверки затопления" in answer["message"]["ru"] and answer["message"]["kk"].strip()
+
+
+def test_point_class_and_method_go_into_answer():
+    """Класс точки и способ расчёта берутся из summary; класс попадает и в текст на двух языках."""
+    summary = {"point_x": {"2025-07": dict(SUMMARY["field_2"]["2025-08"], point_class="salinity", method="classifier")}}
+    answer = export.to_agroqyzyl("point_x", "2025-07", summary)
+    assert answer["result"]["point_class"] == "salinity" and answer["result"]["method"] == "classifier"
+    assert "Точка: Засоление" in answer["message"]["ru"] and "Нүкте: Тұзданған жер" in answer["message"]["kk"]

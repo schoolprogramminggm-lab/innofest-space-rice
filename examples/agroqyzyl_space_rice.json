@@ -33,6 +33,8 @@
       }
     },
     "problem_area": null,
+    "point_class": null,
+    "method": "rules",
     "map_html": "output/map_field_2.html",
     "map_png": "output/ndvi_field_2_2025-08.png"
   },

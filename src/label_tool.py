@@ -8,10 +8,14 @@ label_tool.py: HTML-карта для ручной разметки точек (
 Результат: output/label_<поле>.html. Откройте файл в браузере (нужен интернет для подложки):
   1. справа выберите класс (здоровый рис / стресс / соль / вода / не рис);
   2. кликните по карте: появится точка цвета этого класса. Клик по точке удаляет её;
-  3. кнопка «Скачать CSV» сохраняет файл points.csv. Положите его в labels/.
+  3. кнопка «Скачать CSV» сохраняет файл points_<поле>.csv. Положите его в labels/.
 
-Строки CSV: lat, lon, class, field, date. Классы совпадают с зонами из zones.py
-(healthy, stress, salinity, water) плюс not_rice. date это месяц снимка, на котором ставили точки.
+Если файл labels/points_<поле>.csv уже есть, его точки загружаются на карту при запуске:
+их можно дорисовывать и удалять, а не начинать заново. Скачанный CSV содержит старые
+и новые точки вместе, поэтому просто замените им файл в labels/.
+
+Строки CSV: lat, lon, class, field, date. Классы совпадают с zones.POINT_CLASSES
+(healthy, stress, salinity, water, not_rice). date это месяц снимка, на котором ставили точку.
 На карте два слоя: настоящий снимок Sentinel-2 (тот, по которому считает программа)
 и спутниковая подложка Esri; переключаются в панели слоёв.
 
@@ -19,6 +23,8 @@ label_tool.py: HTML-карта для ручной разметки точек (
 Новых библиотек не нужно: folium и немного JavaScript.
 """
 import argparse
+import csv
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -29,6 +35,7 @@ import numpy as np
 import download
 import load
 import maps
+import zones
 
 # Классы разметки: (ключ в CSV, подпись, цвет точки). Ключи как в zones.ZONE_KEYS.
 CLASSES = [
@@ -40,6 +47,38 @@ CLASSES = [
 ]
 
 CSV_HEADER = "lat,lon,class,field,date"
+LABELS_DIR = download.ROOT / "labels"   # сюда кладём points_<поле>.csv (тесты подменяют папку)
+
+
+def points_path(field):
+    """labels/points_<поле>.csv: файл с точками одного поля."""
+    return LABELS_DIR / ("points_%s.csv" % field)
+
+
+def read_points(path):
+    """
+    Читает файл с точками. Возвращает (точки, пропущено строк).
+    Точка: {"lat", "lon", "class", "field", "date"}. Строка с неизвестным классом
+    или нечисловыми координатами пропускается и считается в «пропущено».
+    Если файла нет, возвращает ([], 0).
+    """
+    path = Path(path)
+    if not path.exists():
+        return [], 0
+    points, skipped = [], 0
+    with open(path, encoding="utf-8", newline="") as f:
+        for row in csv.DictReader(f):
+            try:
+                point = {"lat": float(row["lat"]), "lon": float(row["lon"]), "class": row["class"].strip(),
+                         "field": (row.get("field") or "").strip(), "date": (row.get("date") or "").strip()}
+            except (KeyError, TypeError, ValueError, AttributeError):
+                skipped += 1
+                continue
+            if point["class"] not in zones.POINT_CLASSES:
+                skipped += 1
+                continue
+            points.append(point)
+    return points, skipped
 
 
 def true_color_rgba(scene):
@@ -60,8 +99,8 @@ def true_color_rgba(scene):
     return rgba, bounds
 
 
-def panel_html(field, month):
-    """Панель справа: выбор класса, счётчик, кнопки."""
+def panel_html(field, month, loaded_note=""):
+    """Панель справа: выбор класса, счётчик, кнопки. loaded_note: сколько точек загружено из файла."""
     rows = ""
     for i, (key, label, color) in enumerate(CLASSES):
         rows += (
@@ -81,22 +120,36 @@ def panel_html(field, month):
         '<div id="by_class" style="font-size:12px;color:#555;margin-bottom:8px;"></div>'
         '<button id="undo" style="margin-right:4px;">Отменить последнюю</button>'
         '<button id="download" style="margin-top:6px;font-weight:bold;">Скачать CSV</button>'
-        '<div style="margin-top:6px;font-size:12px;color:#555;">Файл положите в labels/points.csv</div>'
-        '</div>' % (field, month, rows)
+        '<div style="margin-top:6px;font-size:12px;color:#555;">Файл положите в labels/points_%s.csv</div>'
+        '<div style="margin-top:4px;font-size:12px;color:#555;">%s</div>'
+        '</div>' % (field, month, rows, field, loaded_note)
     )
 
 
-def script_js(map_name, field, month):
-    """JavaScript: клики, точки, счётчик, сохранение в браузере, скачивание CSV."""
+def storage_key(field, month, existing):
+    """
+    Ключ localStorage. В него входит отпечаток точек из файла: если файл в labels/ изменился
+    (например, вы положили новый CSV), старая работа в браузере не подмешивается к нему.
+    """
+    digest = hashlib.md5(json.dumps(existing, sort_keys=True).encode()).hexdigest()[:8]
+    return "labels_%s_%s_%s" % (field, month, digest)
+
+
+def script_js(map_name, field, month, existing=()):
+    """
+    JavaScript: клики, точки, счётчик, сохранение в браузере, скачивание CSV.
+    existing: точки из labels/points_<поле>.csv (read_points), они показываются сразу.
+    """
     classes = json.dumps([[k, c] for k, _, c in CLASSES])
     # Скрипт стоит в файле раньше, чем folium создаёт карту, поэтому ждём загрузки страницы
     return """
 window.addEventListener('load', function () {
   var map = %(map)s;
   var FIELD = %(field)s, DATE = %(date)s, STORAGE = %(storage)s;
+  var EXISTING = %(existing)s;   // точки из файла labels/points_<поле>.csv
   var COLORS = {};
   %(classes)s.forEach(function (c) { COLORS[c[0]] = c[1]; });
-  var points = [];   // каждая точка: {lat, lon, cls, marker}
+  var points = [];   // каждая точка: {lat, lon, cls, date, marker}
 
   function currentClass() {
     return document.querySelector('input[name="cls"]:checked').value;
@@ -105,7 +158,7 @@ window.addEventListener('load', function () {
   function save() {   // запоминаем точки в браузере (если он это запрещает, просто пропускаем)
     try {
       localStorage.setItem(STORAGE, JSON.stringify(points.map(function (p) {
-        return {lat: p.lat, lon: p.lon, cls: p.cls};
+        return {lat: p.lat, lon: p.lon, cls: p.cls, date: p.date};
       })));
     } catch (e) {}
   }
@@ -120,12 +173,12 @@ window.addEventListener('load', function () {
     save();
   }
 
-  function addPoint(lat, lon, cls) {
+  function addPoint(lat, lon, cls, date) {
     var marker = L.circleMarker([lat, lon], {
       radius: 6, color: '#000', weight: 1.5, fillColor: COLORS[cls], fillOpacity: 1,
       bubblingMouseEvents: false   // клик по точке не должен ставить новую точку под ней
     }).addTo(map);
-    var point = {lat: lat, lon: lon, cls: cls, marker: marker};
+    var point = {lat: lat, lon: lon, cls: cls, date: date, marker: marker};
     marker.on('click', function () {   // клик по точке удаляет её
       map.removeLayer(marker);
       points.splice(points.indexOf(point), 1);
@@ -135,7 +188,7 @@ window.addEventListener('load', function () {
     refresh();
   }
 
-  map.on('click', function (e) { addPoint(e.latlng.lat, e.latlng.lng, currentClass()); });
+  map.on('click', function (e) { addPoint(e.latlng.lat, e.latlng.lng, currentClass(), DATE); });
 
   document.getElementById('undo').onclick = function () {
     var last = points.pop();
@@ -145,34 +198,43 @@ window.addEventListener('load', function () {
   document.getElementById('download').onclick = function () {
     var lines = ['%(header)s'];
     points.forEach(function (p) {
-      lines.push([p.lat.toFixed(6), p.lon.toFixed(6), p.cls, FIELD, DATE].join(','));
+      // у старых точек остаётся их дата, у новых дата этого снимка
+      lines.push([p.lat.toFixed(6), p.lon.toFixed(6), p.cls, FIELD, p.date || DATE].join(','));
     });
     var blob = new Blob([lines.join('\\n') + '\\n'], {type: 'text/csv;charset=utf-8'});
     var link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.download = 'points.csv';
+    link.download = 'points_' + FIELD + '.csv';
     link.click();
   };
 
-  try {   // вернуть точки, поставленные раньше
-    JSON.parse(localStorage.getItem(STORAGE) || '[]').forEach(function (p) {
-      addPoint(p.lat, p.lon, p.cls);
-    });
+  // Что показать при открытии: если в браузере есть сохранённая работа (она уже включает
+  // точки из файла и правки), берём её; иначе точки из файла labels/points_<поле>.csv.
+  var start = EXISTING.map(function (p) { return {lat: p.lat, lon: p.lon, cls: p.cls, date: p.date}; });
+  try {
+    var saved = localStorage.getItem(STORAGE);
+    if (saved !== null) { start = JSON.parse(saved); }
   } catch (e) {}
+  start.forEach(function (p) { addPoint(p.lat, p.lon, p.cls, p.date); });
   refresh();
 });
 """ % {
         "map": map_name,
         "field": json.dumps(field),
         "date": json.dumps(month),
-        "storage": json.dumps("labels_%s_%s" % (field, month)),
+        "storage": json.dumps(storage_key(field, month, existing)),
+        "existing": json.dumps([{"lat": p["lat"], "lon": p["lon"], "cls": p["class"], "date": p["date"]}
+                                for p in existing]),
         "classes": classes,
         "header": CSV_HEADER,
     }
 
 
-def build_label_map(field, geometry, scene, month):
-    """Собирает карту для разметки. Возвращает объект folium.Map."""
+def build_label_map(field, geometry, scene, month, existing=(), skipped=0):
+    """
+    Собирает карту для разметки. Возвращает объект folium.Map.
+    existing - уже сохранённые точки поля (read_points), skipped - сколько строк файла не прочитано.
+    """
     rgba, bounds = true_color_rgba(scene)
     center = [(bounds[0][0] + bounds[1][0]) / 2, (bounds[0][1] + bounds[1][1]) / 2]
 
@@ -188,8 +250,14 @@ def build_label_map(field, geometry, scene, month):
     ).add_to(m)
     folium.LayerControl(collapsed=False, position="topleft").add_to(m)
 
-    m.get_root().html.add_child(folium.Element(panel_html(field, month)))
-    m.get_root().script.add_child(folium.Element(script_js(m.get_name(), field, month)))
+    if existing:
+        note = "Загружено из labels/points_%s.csv: %d" % (field, len(existing))
+        if skipped:
+            note += " (строк не прочитано: %d)" % skipped
+    else:
+        note = "Файла labels/points_%s.csv пока нет: разметка с нуля." % field
+    m.get_root().html.add_child(folium.Element(panel_html(field, month, note)))
+    m.get_root().script.add_child(folium.Element(script_js(m.get_name(), field, month, existing)))
     return m
 
 
@@ -201,9 +269,10 @@ def save_label_map(field, month, path=None):
             download.month_label(m) for m in download.MONTHS))
     geometry = download.read_geometry(download.FIELDS_DIR / (field + ".geojson"))
     scene = load.load_scene(field, month_number)
+    existing, skipped = read_points(points_path(field))   # точки, поставленные раньше
     out = Path(path) if path else download.OUTPUT_DIR / ("label_%s.html" % field)
     out.parent.mkdir(parents=True, exist_ok=True)
-    build_label_map(field, geometry, scene, download.month_label(month_number)).save(str(out))
+    build_label_map(field, geometry, scene, download.month_label(month_number), existing, skipped).save(str(out))
     return out
 
 
@@ -218,7 +287,10 @@ def main():
     except (ValueError, OSError) as e:
         raise SystemExit("Ошибка: %s" % e)
     print("Готово: %s" % out)
-    print("Откройте файл в браузере, ставьте точки, нажмите «Скачать CSV» и положите файл в labels/points.csv")
+    existing, _ = read_points(points_path(args.field))
+    if existing:
+        print("Загружено точек из %s: %d (их можно дорисовывать)" % (points_path(args.field).name, len(existing)))
+    print("Откройте файл в браузере, ставьте точки, нажмите «Скачать CSV» и положите файл в labels/points_%s.csv" % args.field)
 
 
 if __name__ == "__main__":
