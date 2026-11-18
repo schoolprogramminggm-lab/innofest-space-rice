@@ -4,11 +4,12 @@ point.py: любое поле по запросу (issue #18): точка на �
 Что делает analyze_point(lat, lon, size, month):
   1. строит квадрат size x size метров вокруг точки (GeoJSON);
   2. берёт снимки Sentinel-2 из кэша data/cache/ или скачивает их (download.py, spring.py):
-     июль и август (NDVI), нужный месяц и весну (был ли пиксель затоплен);
-  3. строит маску «рисовое поле» (rice.py): затоплен весной И летом NDVI высокий;
-  4. делит рисовые пиксели на зоны, рисует карту и картинку NDVI;
+     нужный месяц и весну (был ли пиксель затоплен);
+  3. строит рисовый массив (rice.py): пиксель затоплен весной (LSWI + 0.05 >= NDVI, Xiao 2005);
+  4. внутри массива делит пиксели на зоны (здоровый рис, стресс, засоление, вода, пусто),
+     вне массива «не рисовое поле»; рисует карту и картинку NDVI;
   5. возвращает ответ в формате AgroQyzyl (docs/agroqyzyl-format.md).
-Если рисовых пикселей меньше 30%, ответ ok=false: «Здесь, похоже, не рисовое поле».
+Если массива меньше 30% квадрата, ответ ok=false: «Здесь, похоже, не рисовое поле».
 
 Функция ничего не печатает и не падает: если что-то не вышло, вернёт ok=false
 и понятный текст на казахском и русском. Так её сможет вызвать бот.
@@ -39,7 +40,7 @@ OUTPUT_DIR = download.OUTPUT_DIR          # карты, картинки и JSON
 
 DEFAULT_MONTH = "%d-07" % download.YEAR   # месяц по умолчанию: июль, рис в самом росте
 MIN_SIZE, MAX_SIZE = 100, 3000            # размер квадрата, метров
-SUMMER_MONTHS = [7, 8]                    # по их NDVI видно, вырос ли рис (rice.RICE_NDVI)
+SUMMER_MONTHS = [7, 8]                    # нужны только в запасном варианте (нет весенних снимков)
 SEASON_MONTHS = range(5, 11)              # с мая по октябрь поля не убраны
 
 
@@ -192,23 +193,27 @@ def analyze_geometry(name, geometry, month_label, prefix, today=None):
     month = parse_month(month_label)
     state = {}
     try:
-        # 1. Снимки: июль и август (NDVI для маски риса) и нужный месяц.
-        #    Все идут через кэш: что уже скачано, второй раз не качаем.
-        scenes = {}
-        for m in dict.fromkeys(SUMMER_MONTHS + [month]):    # без повторов, порядок сохранён
-            tif = cache_path(prefix, download.month_label(m))
-            if fetch_tif(geometry, m, tif, state) == "ok":
-                scenes[m] = read_ndvi(name, geometry, m, tif)
-        if month not in scenes:
+        # 1. Снимок нужного месяца (через кэш: что уже скачано, второй раз не качаем)
+        tif = cache_path(prefix, month_label)
+        if fetch_tif(geometry, month, tif, state) != "ok":
             return no_image_answer(month_label)
-        summer = [scenes[m][1] for m in SUMMER_MONTHS if m in scenes]
-        if not summer:
-            return no_image_answer(download.month_label(SUMMER_MONTHS[0]))
-        scene, ndvi = scenes[month]
+        scene, ndvi = read_ndvi(name, geometry, month, tif)
 
-        # 2. Весна: максимум NDWI по безоблачным снимкам 20 апреля - 20 июня (один файл на место)
-        flood, flood_images = spring.flood(
-            geometry, cache_path(prefix, "spring"), ndvi.shape, lambda: get_token(state))
+        # 2. Весна: был ли пиксель затоплен на безоблачных снимках 20 апреля - 20 июня
+        flooded, flood_images = spring.flood(
+            geometry, cache_path(prefix, spring.CACHE_NAME), ndvi.shape, lambda: get_token(state))
+
+        # 3. Запасной вариант: весенних снимков нет, берём лето (июль, август) и NDVI > 0.6
+        summer = None
+        if flooded is None:
+            summer_ndvi = []
+            for m in SUMMER_MONTHS:
+                summer_tif = cache_path(prefix, download.month_label(m))
+                if fetch_tif(geometry, m, summer_tif, state) == "ok":
+                    summer_ndvi.append(read_ndvi(name, geometry, m, summer_tif)[1])
+            if not summer_ndvi:
+                return no_image_answer(download.month_label(SUMMER_MONTHS[0]))
+            summer = rice.summer_ndvi(*summer_ndvi)
     except SystemExit as e:                      # download.get_token: нет ключей или вход не удался
         return server_error_answer(str(e))
     except requests.RequestException as e:       # нет интернета, таймаут, ошибка сервера
@@ -217,14 +222,14 @@ def analyze_geometry(name, geometry, month_label, prefix, today=None):
     if scene["mask"].sum() < 4:                  # контур попал на место, где спутник не снимал
         return no_image_answer(month_label)
 
-    # 3. Маска риса: затоплен весной И летом NDVI высокий (rice.py)
+    # 4. Рисовый массив: затоплен весной (rice.py)
     mask = scene["mask"]
-    rice_pixels = rice.rice_mask(rice.summer_ndvi(*summer), flood, mask)
+    rice_pixels = rice.rice_array(flooded, mask, summer)
     share = rice.rice_share(rice_pixels, mask)
     if not rice.is_rice_field(share):
         return export.not_rice_answer(100 * share)
 
-    # 4. Зоны только по рисовым пикселям, остальное «не рисовое поле»
+    # 5. Зоны внутри массива по NDVI, SI и NDWI месяца; вне массива «не рисовое поле»
     b = scene["bands"]
     si = indices.si(b["B02"], b["B04"])
     ndwi = indices.ndwi(b["B03"], b["B08"])
@@ -232,13 +237,13 @@ def analyze_geometry(name, geometry, month_label, prefix, today=None):
     areas = zones.zone_areas(zone_map, scene["pixel_ha"])
     field_ha = round(float(mask.sum()) * scene["pixel_ha"], 1)
 
-    # 5. Картинка NDVI и карта
+    # 6. Картинка NDVI и карта
     indices.save_ndvi_png(ndvi, scene["mask"], "NDVI: %s, %s" % (name, month_label),
                           OUTPUT_DIR / ("ndvi_%s_%s.png" % (name, month_label)))
     maps.save_map(name, geometry, {month: (zone_map, scene["transform"], scene["crs"])},
                   OUTPUT_DIR / ("map_%s.html" % name))
 
-    # 6. Ответ в формате AgroQyzyl: summary собираем в памяти, summary.json не трогаем
+    # 7. Ответ в формате AgroQyzyl: summary собираем в памяти, summary.json не трогаем
     summary = {name: {month_label: {"area_ha": field_ha, "zones": areas,
                                     "rice_pct": round(100 * share, 1), "flood_images": flood_images}}}
     answer = export.to_agroqyzyl(name, month_label, summary)

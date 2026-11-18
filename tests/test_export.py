@@ -11,7 +11,7 @@ import export
 # Обязательные ключи формата (docs/agroqyzyl-format.md)
 KEYS = {"module", "version", "ok", "result", "message", "error"}
 RESULT_KEYS = {"field", "date", "area_ha", "zones", "problem_area", "map_html", "map_png"}
-ZONE_KEYS = {"healthy", "stress", "salinity", "water", "not_rice"}
+ZONE_KEYS = {"healthy", "stress", "salinity", "water", "empty", "not_rice"}
 
 # Маленький summary.json «как после run.py»: одно поле, один месяц
 SUMMARY = {
@@ -23,6 +23,7 @@ SUMMARY = {
                 "stress": {"ha": 36.8, "pct": 40.2},
                 "salinity": {"ha": 1.8, "pct": 2.0},
                 "water": {"ha": 18.3, "pct": 20.0},
+                "empty": {"ha": 0.0, "pct": 0.0},
                 "not_rice": {"ha": 0.0, "pct": 0.0},
             },
             "rice_pct": 100.0,

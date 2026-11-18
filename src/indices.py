@@ -1,5 +1,5 @@
 """
-indices.py: индексы NDVI, SI, NDWI и картинка NDVI.
+indices.py: индексы NDVI, SI, NDWI, LSWI и картинка NDVI.
 
 Каждая функция получает каналы как массивы NumPy (отражение от 0 до 1)
 и считает индекс сразу для всех пикселей. Формулы: README, раздел 3.2.
@@ -43,6 +43,16 @@ def ndwi(b3, b8):
     b3 = np.asarray(b3, dtype="float32")
     b8 = np.asarray(b8, dtype="float32")
     return _divide(b3 - b8, b3 + b8)
+
+
+def lswi(b8, b11):
+    """
+    LSWI = (B8 - B11) / (B8 + B11): влажность растений и почвы (инфракрасные каналы).
+    Нужен для признака затопления рисового чека (rice.py, Xiao et al., 2005).
+    """
+    b8 = np.asarray(b8, dtype="float32")
+    b11 = np.asarray(b11, dtype="float32")
+    return _divide(b8 - b11, b8 + b11)
 
 
 def save_ndvi_png(ndvi_array, mask, title, path):

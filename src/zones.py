@@ -8,12 +8,14 @@ KMeans сам собирает пиксели в 4 группы (кластер�
 В карте зон каждый пиксель хранит код: 0 = вне поля / нет данных, 1..4 = зона.
 """
 import numpy as np
+import rice as rice_rules   # пороги зон и затопления
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 
 # Ключи зон. Код зоны в массиве = номер в списке + 1.
-# not_rice (код 5): пиксель не рис по маске rice.py (серая зона на карте).
-ZONE_KEYS = ["healthy", "stress", "salinity", "water", "not_rice"]
+# empty: неудачный посев / пусто (внутри рисового массива, но растений нет).
+# not_rice (код 6): пиксель вне рисового массива rice.py (серая зона на карте).
+ZONE_KEYS = ["healthy", "stress", "salinity", "water", "empty", "not_rice"]
 NOT_RICE_CODE = ZONE_KEYS.index("not_rice") + 1
 
 # Названия для консоли
@@ -21,7 +23,8 @@ ZONE_NAMES_RU = {
     "healthy": "Здоровый рис",
     "stress": "Стресс",
     "salinity": "Засоление",
-    "water": "Вода / пусто",
+    "water": "Вода",
+    "empty": "Неудачный посев / пусто",
     "not_rice": "Не рисовое поле",
 }
 
@@ -104,40 +107,40 @@ def find_zones(ndvi, si, ndwi, mask):
 
 def find_rice_zones(ndvi, si, ndwi, rice, mask):
     """
-    Зоны с учётом маски риса (issue #19).
+    Зоны с учётом рисового массива (issue #19). Пороги: rice.py.
 
-    «Здоровый рис» и «Стресс» считаются ТОЛЬКО по рисовым пикселям (rice == True):
-    KMeans делит их на 2 группы, где NDVI выше, там здоровый рис, где ниже, там стресс.
-    Все остальные пиксели поля это «не рисовое поле» (код 5).
-
-    rice - True на рисовых пикселях (rice.rice_mask), mask - True внутри поля.
-    Возвращает (zone_map, means): как find_zones, но в means только healthy и stress.
-    Засоление и вода здесь пока не ищутся: такие пиксели в среднем не зелёные,
-    и маска риса относит их к «не рисовым».
+    rice - True на пикселях рисового массива (затоплены весной), mask - True внутри поля.
+    Вне массива (но внутри поля) пиксель «не рисовое поле» (код 6).
+    Внутри массива по состоянию в месяце снимка:
+      NDVI > 0.6                         здоровый рис
+      0.3 <= NDVI <= 0.6                 стресс
+      NDVI < 0.3 и SI высокий            засоление
+      NDVI < 0.3, SI низкий, NDWI > 0    вода
+      NDVI < 0.3, остальное              неудачный посев / пусто
+    Возвращает (zone_map, means): zone_map как в find_zones, means: средние [NDVI, SI, NDWI]
+    по каждой зоне, где есть пиксели.
     """
     zone_map = np.zeros(ndvi.shape, dtype="uint8")
     zone_map[mask] = NOT_RICE_CODE
 
-    # только рисовые пиксели, где все три индекса посчитались
+    # только пиксели массива, где все три индекса посчитались
     valid = rice & mask & np.isfinite(ndvi) & np.isfinite(si) & np.isfinite(ndwi)
-    if valid.sum() < 2:
-        return zone_map, {}   # риса нет: всё поле «не рисовое»
 
-    features = np.column_stack([ndvi[valid], si[valid], ndwi[valid]])
-    scaled = StandardScaler().fit_transform(features)
-    cluster = KMeans(n_clusters=2, n_init=10, random_state=42).fit_predict(scaled)
+    def code(key):
+        return ZONE_KEYS.index(key) + 1
 
-    # какая группа здоровая: та, где средний NDVI выше (NDVI это столбец 0)
-    mean_ndvi = [features[cluster == c, 0].mean() if (cluster == c).any() else -9 for c in (0, 1)]
-    healthy_cluster = int(np.argmax(mean_ndvi))
-    codes = np.where(cluster == healthy_cluster, ZONE_KEYS.index("healthy") + 1,
-                     ZONE_KEYS.index("stress") + 1).astype("uint8")
-    zone_map[valid] = codes
+    low = valid & (ndvi < rice_rules.STRESS_NDVI)          # растений почти нет
+    zone_map[valid & (ndvi > rice_rules.HEALTHY_NDVI)] = code("healthy")
+    zone_map[valid & ~low & (ndvi <= rice_rules.HEALTHY_NDVI)] = code("stress")
+    zone_map[low] = code("empty")                          # сначала «пусто», ниже уточняем
+    zone_map[low & (si > rice_rules.SALT_SI)] = code("salinity")
+    zone_map[low & (si <= rice_rules.SALT_SI) & (ndwi > rice_rules.WATER_NDWI)] = code("water")
 
     means = {}
-    for key, c in (("healthy", healthy_cluster), ("stress", 1 - healthy_cluster)):
-        if (cluster == c).any():
-            means[key] = [float(v) for v in features[cluster == c].mean(axis=0)]
+    for key in ZONE_KEYS:
+        pixels = zone_map == code(key)
+        if key != "not_rice" and pixels.any():
+            means[key] = [float(v[pixels].mean()) for v in (ndvi, si, ndwi)]
     return zone_map, means
 
 

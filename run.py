@@ -41,12 +41,13 @@ SPRING_DIR = download.DATA_DIR / "spring"   # весенние файлы «ма
 
 def field_rice_mask(field, geometry):
     """
-    Маска риса для поля из fields/ (rice.py): затоплен весной И летом NDVI высокий.
-    Возвращает (маска, доля риса 0..1, число весенних снимков) или None, если нет летних снимков.
-    Весенний файл скачивается один раз в data/spring/. Если сети нет и в кэше его нет,
-    строим маску только по летнему NDVI (images = 0, в ответе будет пометка).
+    Рисовый массив для поля из fields/ (rice.py): пиксель затоплен весной.
+    Возвращает (массив, доля 0..1, число весенних снимков) или None, если построить нельзя.
+    Весенний файл скачивается один раз в data/spring/. Если сети нет и в кэше его нет
+    (или весной не было безоблачных снимков), берём лето: NDVI июля/августа > 0.6, images = 0,
+    в ответе будет пометка «без проверки затопления».
     """
-    summer = []
+    summer, mask = [], None
     for month in point.SUMMER_MONTHS:
         if download.tif_path(field, month).exists():
             scene = load.load_scene(field, month)
@@ -56,14 +57,14 @@ def field_rice_mask(field, geometry):
     if not summer:
         return None
 
-    flood, images = None, 0
+    flooded, images = None, 0
     try:
         state = {}
-        flood, images = spring.flood(geometry, SPRING_DIR / (field + "_spring.tif"),
-                                     summer[0].shape, lambda: point.get_token(state))
-    except (SystemExit, Exception) as e:   # нет сети или ключей: не падаем, а идём без проверки воды
-        print("%s: весенние снимки недоступны (%s), маска только по летнему NDVI" % (field, e))
-    pixels = rice.rice_mask(rice.summer_ndvi(*summer), flood, mask)
+        flooded, images = spring.flood(geometry, SPRING_DIR / (field + "_%s.tif" % spring.CACHE_NAME),
+                                       summer[0].shape, lambda: point.get_token(state))
+    except Exception as e:   # нет сети или ключей: не падаем, а идём без проверки воды
+        print("%s: весенние снимки недоступны (%s), берём лето" % (field, e))
+    pixels = rice.rice_array(flooded, mask, rice.summer_ndvi(*summer))
     return pixels, rice.rice_share(pixels, mask), images
 
 
@@ -84,7 +85,7 @@ def process_scene(field, month, rice_pixels):
         download.OUTPUT_DIR / ("ndvi_%s_%s.png" % (field, download.month_label(month))),
     )
 
-    # 3. зоны KMeans только по рисовым пикселям, остальное «не рисовое поле»
+    # 3. зоны внутри рисового массива, остальное «не рисовое поле»
     zone_map, means = zones.find_rice_zones(ndvi, si, ndwi, rice_pixels, scene["mask"])
     areas = zones.zone_areas(zone_map, scene["pixel_ha"])
     field_ha = round(float(scene["mask"].sum()) * scene["pixel_ha"], 1)
@@ -158,10 +159,10 @@ def main():
 
         found = field_rice_mask(field, geometry)
         if found is None:
-            print("%s: нет июльского и августовского снимков, маску риса не построить, пропускаю" % field)
+            print("%s: нет июльского и августовского снимков, рисовый массив не построить, пропускаю" % field)
             continue
         rice_pixels, share, images = found
-        print("\n%s: риса %.1f%% поля, весенних снимков %d%s" % (
+        print("\n%s: рисовый массив %.1f%% поля, весенних снимков %d%s" % (
             field, 100 * share, images, "" if images else " (без проверки затопления)"))
 
         for month in download.MONTHS:

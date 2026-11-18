@@ -2,15 +2,15 @@
 spring.py: «был ли пиксель затоплен весной» (issue #19).
 
 Рис заливают в разное время (с конца апреля до середины июня), поэтому одного снимка мало.
-Мы просим у Copernicus ОДИН файл на поле, в котором сервер уже сам посчитал:
-  канал 1: максимум NDWI по всем безоблачным снимкам с 20 апреля по 20 июня;
+Мы просим у Copernicus ОДИН файл на поле, в котором сервер уже сам проверил каждый безоблачный
+снимок с 20 апреля по 20 июня по правилу Xiao et al., 2005 (rice.py):
+  канал 1: 1, если хотя бы на одном снимке LSWI + 0.05 >= NDVI (пиксель был затоплен), иначе 0;
   канал 2: сколько снимков реально увидели этот пиксель (без облаков и теней).
-Облака и тени убираем по каналу SCL (классификация сцены): иначе тень или облако
-дали бы ложную «воду», а максимум по многим датам такие выбросы только усиливает.
+Облака и тени убираем по каналу SCL (классификация сцены): облако даёт NDVI около 0 и
+LSWI около 0, то есть выглядело бы как «вода», а «хотя бы на одном снимке» такие выбросы усиливает.
 
 Файл кладётся в кэш и повторно не скачивается.
 """
-import numpy as np
 import rasterio
 import requests
 
@@ -21,34 +21,40 @@ import rice
 # 8 и 9 облака, 10 тонкие перистые облака, 11 снег.
 BAD_SCL = [0, 1, 3, 8, 9, 10, 11]
 
+# Имя файла в кэше. Суффикс lswi: старые файлы «максимум NDWI» (прошлая версия правила) не подходят.
+CACHE_NAME = "spring_lswi"
+
 # Evalscript: короткая программа, которая выполняется на сервере для каждого пикселя.
 # mosaicking ORBIT: программа получает все снимки (пролёты спутника) за период сразу.
+# Формула затопления здесь та же, что rice.is_flooded.
 EVALSCRIPT = """//VERSION=3
 function setup() {
   return {
-    input: [{ bands: ["B03", "B08", "SCL"], units: ["REFLECTANCE", "REFLECTANCE", "DN"] }],
+    input: [{ bands: ["B04", "B08", "B11", "SCL"],
+              units: ["REFLECTANCE", "REFLECTANCE", "REFLECTANCE", "DN"] }],
     output: { bands: 2, sampleType: "FLOAT32" },
     mosaicking: "ORBIT"
   };
 }
 function evaluatePixel(samples) {
   var bad = %s;
-  var best = -2;   // -2: ни одного хорошего снимка
-  var count = 0;
+  var flooded = 0;   // 1, если хотя бы на одном снимке LSWI + margin >= NDVI
+  var count = 0;     // сколько хороших снимков видели этот пиксель
   for (var i = 0; i < samples.length; i++) {
     var s = samples[i];
-    if (bad.indexOf(s.SCL) >= 0 || s.B03 + s.B08 <= 0) continue;
-    var ndwi = (s.B03 - s.B08) / (s.B03 + s.B08);
-    if (ndwi > best) best = ndwi;
+    if (bad.indexOf(s.SCL) >= 0 || s.B08 + s.B04 <= 0 || s.B08 + s.B11 <= 0) continue;
+    var ndvi = (s.B08 - s.B04) / (s.B08 + s.B04);
+    var lswi = (s.B08 - s.B11) / (s.B08 + s.B11);
+    if (lswi + %s >= ndvi) flooded = 1;
     count++;
   }
-  return [best, count];
+  return [flooded, count];
 }
-""" % BAD_SCL
+""" % (BAD_SCL, rice.LSWI_MARGIN)
 
 
 def build_request(geometry):
-    """Тело запроса к Process API: один файл «максимум NDWI за весну» для контура."""
+    """Тело запроса к Process API: один файл «был затоплен весной» для контура."""
     bbox, epsg, width, height = download.field_bbox(geometry)
     return {
         "input": {
@@ -87,28 +93,27 @@ def fetch(geometry, tif, get_token):
 
 def read(tif, shape):
     """
-    Читает весенний файл. Возвращает (flood, images):
-      flood  - максимум NDWI за весну, NaN там, где не было ни одного хорошего снимка
-      images - сколько весенних снимков видели хотя бы часть поля (0, если снимков нет)
+    Читает весенний файл. Возвращает (flooded, images):
+      flooded - True там, где пиксель был затоплен хотя бы на одном весеннем снимке
+      images  - сколько весенних снимков видели хотя бы часть поля (0, если снимков нет)
     shape - форма снимка поля (высота, ширина): весенний файл должен лежать на той же сетке.
     """
     with rasterio.open(tif) as src:
         data = src.read().astype("float32")
     if data.shape[1:] != tuple(shape):
         raise ValueError("весенний снимок %s другого размера, удалите его из кэша" % tif.name)
-    count = data[1]
-    flood = np.where(count > 0, data[0], np.nan).astype("float32")
-    return flood, int(count.max())
+    flooded = data[0] > 0.5
+    return flooded, int(data[1].max())
 
 
 def flood(geometry, tif, shape, get_token):
     """
-    Всё вместе: скачать (или взять из кэша) и прочитать. Возвращает (flood, images).
-    Если весенних безоблачных снимков нет, возвращает (None, 0): маска риса тогда
+    Всё вместе: скачать (или взять из кэша) и прочитать. Возвращает (flooded, images).
+    Если весенних безоблачных снимков нет, возвращает (None, 0): рисовый массив тогда
     строится по летнему NDVI, а в ответе появляется пометка «без проверки затопления».
     """
     fetch(geometry, tif, get_token)
-    flood_ndwi, images = read(tif, shape)
+    flooded, images = read(tif, shape)
     if images == 0:
         return None, 0
-    return flood_ndwi, images
+    return flooded, images
